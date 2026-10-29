@@ -475,6 +475,55 @@ try {
     })
   }
 
+  await test('3.5 piltangenterna bläddrar mellan bilderna', async () => {
+    const page = detailPage!
+    const heading = () => page.$eval('dialog.detail[open] h2', (element) => element.textContent)
+    const position = () => page.$eval('dialog.detail[open] .detail-position', (element) => element.textContent)
+    const previewLoaded = async () =>
+      page.waitForFunction(
+        (id) => {
+          const dialog = document.querySelector('dialog.detail[open]')
+          const image = dialog?.querySelector<HTMLImageElement>('.detail-preview img')
+          return dialog?.querySelector('h2')?.textContent === id && image?.complete && image.naturalWidth > 0
+        },
+        { timeout: 10_000 },
+        index.images[Number((await position())!.split(' ')[0]) - 1].id,
+      )
+    const last = index.images.length - 1
+
+    await page.evaluate(() => (document.querySelector('.gallery')!.scrollTop = 0))
+    await page.locator('.gallery-cell[data-index="0"]').click()
+    await page.waitForSelector('dialog.detail[open]')
+    assert((await heading()) === index.images[0].id, 'Fel bild öppnades')
+    assert((await position()) === `1 av ${index.images.length}`, `Räknaren visar "${await position()}"`)
+
+    await page.keyboard.press('ArrowLeft')
+    assert((await heading()) === index.images[0].id, 'Vänsterpil på första bilden bytte bild')
+    await page.keyboard.press('ArrowRight')
+    await page.keyboard.press('ArrowRight')
+    assert((await heading()) === index.images[2].id, `Högerpil två gånger gav ${await heading()}`)
+    await previewLoaded()
+    await page.keyboard.press('ArrowLeft')
+    assert((await heading()) === index.images[1].id, `Vänsterpil gav ${await heading()}`)
+
+    await page.locator('button[aria-label="Nästa bild"]').click()
+    assert((await heading()) === index.images[2].id, 'Knappen Nästa bild bytte inte bild')
+    for (let n = 2; n < last; n++) await page.keyboard.press('ArrowRight')
+    assert((await heading()) === index.images[last].id, `Sista bilden nåddes inte, visar ${await heading()}`)
+    await page.keyboard.press('ArrowRight')
+    assert((await heading()) === index.images[last].id, 'Högerpil på sista bilden bytte bild')
+    assert(
+      await page.$eval('button[aria-label="Nästa bild"]', (button) => (button as HTMLButtonElement).disabled),
+      'Knappen Nästa bild är inte avstängd på sista bilden',
+    )
+    await screenshot(page, '3.5-bläddra')
+
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
+    const state = await galleryState(page)
+    assert(state.live === state.loaded, `Förhandsbilder frigjordes inte vid bläddring (${state.live} levande URL:er)`)
+  })
+
   // Om testdatat har en fil utan förhandsbild, t.ex. en RAW-fil utan JPG eller en
   // video när ffmpeg saknas (FFMPEG_PATH=saknas npm run make-testdata).
   const problemIndex = index.images.findIndex((i) => i.previewProblem)

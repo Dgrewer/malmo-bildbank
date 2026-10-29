@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
@@ -6,20 +6,35 @@ import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 interface Props {
   image: ImageRecord
+  // Bildens plats i galleriet, från 0, och antalet bilder.
+  position: number
+  count: number
   previews: FileSystemDirectoryHandle
+  onNavigate: (position: number) => void
   onClose: () => void
 }
 
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
-// Förhandsbildens object-URL frigörs när dialogen stängs.
-export function DetailView({ image, previews, onClose }: Props) {
+// Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
+// och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
+export function DetailView({ image, position, count, previews, onNavigate, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
   const expired = rightsExpired(image)
+  const hasPrevious = position > 0
+  const hasNext = position < count - 1
 
   useEffect(() => {
     if (!dialog.current!.open) dialog.current!.showModal()
   }, [])
+
+  function onKeyDown(event: KeyboardEvent) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return
+    if (event.key === 'ArrowLeft' && hasPrevious) onNavigate(position - 1)
+    else if (event.key === 'ArrowRight' && hasNext) onNavigate(position + 1)
+    else return
+    event.preventDefault()
+  }
 
   return (
     <dialog
@@ -27,6 +42,7 @@ export function DetailView({ image, previews, onClose }: Props) {
       className={image.blocked ? 'detail is-blocked' : 'detail'}
       aria-labelledby="detail-title"
       onClose={onClose}
+      onKeyDown={onKeyDown}
       onClick={(event) => event.target === dialog.current && dialog.current.close()}
     >
       <div className="detail-preview">
@@ -49,6 +65,29 @@ export function DetailView({ image, previews, onClose }: Props) {
           <h2 id="detail-title">{image.id}</h2>
           <button type="button" onClick={() => dialog.current!.close()}>
             Stäng
+          </button>
+        </div>
+        <div className="detail-nav">
+          <button
+            type="button"
+            aria-label="Föregående bild"
+            title="Föregående bild (vänsterpil)"
+            disabled={!hasPrevious}
+            onClick={() => onNavigate(position - 1)}
+          >
+            ‹
+          </button>
+          <span className="detail-position">
+            {(position + 1).toLocaleString('sv-SE')} av {count.toLocaleString('sv-SE')}
+          </span>
+          <button
+            type="button"
+            aria-label="Nästa bild"
+            title="Nästa bild (högerpil)"
+            disabled={!hasNext}
+            onClick={() => onNavigate(position + 1)}
+          >
+            ›
           </button>
         </div>
 

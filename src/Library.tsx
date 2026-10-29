@@ -77,9 +77,11 @@ export function Library({ root, onChangeFolder }: Props) {
       )}
       {state.kind === 'ready' && selected !== null && (
         <DetailView
-          key={selected}
           image={state.catalog.images[selected]}
+          position={selected}
+          count={state.catalog.images.length}
           previews={state.catalog.previews}
+          onNavigate={setSelected}
           onClose={() => setSelected(null)}
         />
       )}

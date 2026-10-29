@@ -282,6 +282,29 @@ button.primary {
   margin-bottom: 1rem;
 }
 
+.detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.detail-nav button {
+  min-width: 2.5rem;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.detail-nav button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.detail-position {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .detail-header h2 {
   font-size: 1.1rem;
   margin: 0;
