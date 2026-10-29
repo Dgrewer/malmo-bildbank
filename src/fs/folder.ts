@@ -83,15 +83,18 @@ export async function removeFile(directory: FileSystemDirectoryHandle, name: str
 // index.json. Går något fel finns alltid en hel version kvar.
 export async function writeIndexFile(appData: FileSystemDirectoryHandle, text: string) {
   await writeFile(appData, 'index.tmp.json', text)
+  // Den nuvarande versionen läses in som text först. En tom eller oläslig fil
+  // får aldrig ersätta en tidigare index.prev.json.
   const current = await findFile(appData, 'index.json')
-  if (current) await writeFile(appData, 'index.prev.json', await current.getFile())
-  const temporary = await appData.getFileHandle('index.tmp.json')
+  const previous = current ? await (await current.getFile()).text() : ''
+  if (previous) await writeFile(appData, 'index.prev.json', previous)
   try {
-    await temporary.move('index.json')
+    await (await appData.getFileHandle('index.tmp.json')).move('index.json')
   } catch {
-    // Vissa filsystem byter inte namn till ett namn som redan finns.
-    await removeFile(appData, 'index.json')
-    await temporary.move('index.json')
+    // Mappar på disken (inte webbläsarens egna) kan sakna namnbyte. Då skrivs
+    // index.json direkt. createWritable byter ändå ut filen först när allt är skrivet.
+    await writeFile(appData, 'index.json', text)
+    await removeFile(appData, 'index.tmp.json')
   }
 }
 

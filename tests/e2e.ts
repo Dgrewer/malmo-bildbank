@@ -1034,6 +1034,15 @@ try {
       ),
       'Kopian visas inte som dubblett',
     )
+    // Borttagningen måste bekräftas innan importen kan starta.
+    await waitForText(page, 'finns inte i originalmappen och tas bort ur bildbanken')
+    const start = 'button::-p-text(Starta import)'
+    assert(await page.$eval(start, (button) => (button as HTMLButtonElement).disabled), 'Importen kan starta utan bekräftelse')
+    await page.click('.remove-warning input[type="checkbox"]')
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('.import-preview button.primary')!.disabled, {
+      timeout: 5_000,
+    })
+    await screenshot(page, '4.1-bekrafta-borttagning')
     await clickButton(page, 'Starta import')
     await waitForText(page, 'Importen är klar', 120_000)
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
@@ -1050,6 +1059,7 @@ try {
     await opfsCopy(page, bank, source.path, 'original/Fotograf C/Ännu en.jpg', 'en till')
     await clickButton(page, 'Sök efter ändringar')
     await waitForPreview(page)
+    await page.click('.remove-warning input[type="checkbox"]')
     await clickButton(page, 'Starta import')
     await waitForText(page, 'Importen är klar', 120_000)
     const after = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
@@ -1126,6 +1136,86 @@ try {
     await waitForText(page, `${index.images.length} bilder`)
   })
   await (importPage as Page | null)?.close()
+
+  console.log('4.7 Original')
+
+  await test('4.7 nya original kopieras till bildbanken utan att något skrivs över', async () => {
+    // En tom bildbank och en egen originalmapp ("externa", som G:) med ett
+    // RAW-par och en fil vars namn redan finns i bildbankens original/.
+    const page = await openPage('/?testdata&fresh&name=kopiabank')
+    await waitForText(page, 'Hittar inte app-data/index.json', 120_000)
+    await page.evaluate(async () => {
+      const opfs = await navigator.storage.getDirectory()
+      await opfs.removeEntry('externa', { recursive: true }).catch(() => {})
+      const external = await opfs.getDirectoryHandle('externa', { create: true })
+      async function write(directory: FileSystemDirectoryHandle, folder: string, name: string, data: Blob) {
+        const target = await directory.getDirectoryHandle(folder, { create: true })
+        const writable = await (await target.getFileHandle(name, { create: true })).createWritable()
+        await writable.write(data)
+        await writable.close()
+      }
+      const testFile = async (name: string) =>
+        (await fetch(`/__testdata/file?path=${encodeURIComponent(`Original/Fotograf C/${name}`)}`)).blob()
+      const jpg = await testFile('RAW-par.jpg')
+      await write(external, 'Fotograf C', 'RAW-par.CR2', await testFile('RAW-par.CR2'))
+      await write(external, 'Fotograf C', 'RAW-par.jpg', jpg)
+      await write(external, 'Fotograf A', 'Krock.jpg', new Blob([jpg, 'annan bild']))
+      const bankOriginals = await (await opfs.getDirectoryHandle('kopiabank')).getDirectoryHandle('Original')
+      await write(bankOriginals, 'Fotograf A', 'Krock.jpg', new Blob(['finns redan']))
+      // Mappväljaren går inte att automatisera. Den ger tillbaka den externa mappen.
+      ;(window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker =
+        async () => external
+    })
+    await clickButton(page, 'Importera')
+    // Bildbankens egen mapp går inte att välja som originalmapp.
+    await page.evaluate(async () => {
+      const bank = await (await navigator.storage.getDirectory()).getDirectoryHandle('kopiabank')
+      const picker = window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }
+      const external = picker.showDirectoryPicker
+      picker.showDirectoryPicker = async () => {
+        picker.showDirectoryPicker = external
+        return bank
+      }
+    })
+    await clickButton(page, 'Välj originalmapp')
+    await waitForText(page, '”kopiabank” är bildbankens mapp')
+    await clickButton(page, 'Välj originalmapp')
+    await waitForText(page, 'externa')
+    await clickButton(page, 'Sök efter ändringar')
+    const { counts } = await waitForPreview(page)
+    assert(counts.new === 2, `Väntade 2 nya bilder: ${JSON.stringify(counts)}`)
+    const checkbox = 'label.copy-originals input[type="checkbox"]'
+    assert(!(await page.$eval(checkbox, (input) => (input as HTMLInputElement).checked)), 'Kryssrutan är ikryssad från början')
+    await page.locator(checkbox).click()
+    await screenshot(page, '4.7-kopiera-original')
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    await waitForText(page, '2 original kopierades till bildbankens original/.')
+    const notOverwritten = (await readPreviewLists(page))[
+      'Fanns redan i bildbankens original/ med annat innehåll, skrevs inte över'
+    ]
+    assert(
+      JSON.stringify(notOverwritten) === JSON.stringify(['original/Fotograf A/Krock.jpg']),
+      `Filer som inte skrevs över: ${notOverwritten}`,
+    )
+    assert(
+      (await readOpfs(page, 'kopiabank/Original/Fotograf A/Krock.jpg')) === 'finns redan',
+      'Filen som redan fanns skrevs över',
+    )
+    for (const name of ['RAW-par.CR2', 'RAW-par.jpg']) {
+      const copied = await readOpfs(page, `kopiabank/Original/Fotograf C/${name}`)
+      const source = await fs.readFile(`testdata/Original/Fotograf C/${name}`, 'latin1')
+      assert(copied !== null && copied.length > 0, `${name} kopierades inte`)
+      assert((await opfs(page, 'kopiabank', `original/Fotograf C/${name}`, 'read')) === Buffer.from(source, 'latin1').toString('base64'), `${name} är inte en exakt kopia`)
+    }
+
+    // Med bildbankens egen original/ som originalmapp finns inget att kopiera.
+    await clickButton(page, 'Använd bildbankens original')
+    await clickButton(page, 'Sök efter ändringar')
+    await waitForPreview(page)
+    assert(!(await page.$(checkbox)), 'Kryssrutan visas fast originalmappen är bildbankens egen')
+    await page.close()
+  })
 } finally {
   await browser.close()
   await server.close()

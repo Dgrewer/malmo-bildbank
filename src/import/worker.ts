@@ -9,7 +9,7 @@ import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
 import { idNumber, INDEX_VERSION, type IndexDuplicate, type ImageRecord, type IndexFile } from '../catalog/types.ts'
-import { ensureDirectory, readFile, removeFile, writeFile, writeIndexFile } from '../fs/folder.ts'
+import { ensureDirectory, findDirectory, readFile, removeFile, writeFile, writeIndexFile } from '../fs/folder.ts'
 import { combinedHash, quickHash } from './hash.ts'
 import {
   decodeImage,
@@ -33,6 +33,10 @@ interface HashedScannedFile extends ScannedFile {
 
 interface Session {
   bank: FileSystemDirectoryHandle
+  originals: FileSystemDirectoryHandle
+  // Id:n i indexet före importen. Övriga bilder är nya, även de som blev klara
+  // i en avbruten import.
+  indexed: Set<string>
   thumbs: FileSystemDirectoryHandle
   previews: FileSystemDirectoryHandle
   plan: ImportPlan<HashedScannedFile>
@@ -177,7 +181,8 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     const missing = !(thumbNames.has(name) && previewNames.has(name))
     if (item.change === 'unchanged' && !item.previous?.previewProblem && missing) item.change = 'changed'
   }
-  session = { bank, thumbs, previews, plan, journal: new Journal(bank, journal), resumed, duplicates }
+  const indexed = new Set((index?.images ?? []).map((record) => record.id))
+  session = { bank, originals, indexed, thumbs, previews, plan, journal: new Journal(bank, journal), resumed, duplicates }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -276,7 +281,34 @@ async function removeImages(current: Session, id: string) {
   await removeFile(current.previews, `${id}.webp`)
 }
 
-async function runImport(current: Session) {
+// Kopierar de nya bildernas original, och JPG:en till ett RAW-par, till
+// bildbankens original/ med samma sökväg. En fil som redan finns skrivs aldrig
+// över. Har den samma storlek räknas den som redan kopierad, annars rapporteras den.
+async function copyOriginals(current: Session, images: ImageRecord[]) {
+  const files = new Map(current.plan.items.flatMap((item) => [item.file, ...item.file.alternates]).map((f) => [f.path, f]))
+  const paths = images.filter((image) => !current.indexed.has(image.id)).flatMap((image) => [image.path, ...image.alternates])
+  const result = { copied: 0, notOverwritten: [] as string[] }
+  for (const [n, path] of paths.entries()) {
+    await breathe()
+    progress('copy', n, paths.length)
+    const source = files.get(path)
+    if (!source) continue
+    const existing = await readFile(current.bank, path)
+    if (existing) {
+      if (existing.size !== source.size) result.notOverwritten.push(path)
+      continue
+    }
+    const directory = await ensureDirectory(current.bank, path.slice(0, path.lastIndexOf('/')))
+    const name = path.slice(path.lastIndexOf('/') + 1)
+    const writable = await (await directory.getFileHandle(name, { create: true })).createWritable()
+    await (await source.handle.getFile()).stream().pipeTo(writable)
+    result.copied++
+  }
+  progress('copy', paths.length, paths.length)
+  return result
+}
+
+async function runImport(current: Session, copy: boolean) {
   const { bank, plan, journal } = current
   const work = plan.items.filter((item) => item.change !== 'unchanged')
   const records = new Map<string, ImageRecord>()
@@ -294,7 +326,6 @@ async function runImport(current: Session) {
   }
   progress('import', work.length, work.length)
 
-  post({ type: 'progress', phase: 'save', done: 0, total: 1 })
   const all = plan.items
     .map((item) => records.get(item.id) ?? baseRecord(item))
     .sort((a, b) => idNumber(a.id) - idNumber(b.id))
@@ -302,15 +333,16 @@ async function runImport(current: Session) {
   // De andra tas inte med i indexet, men filerna ligger kvar i originalmappen.
   const dropped = findDuplicates(all)
   const images = all.filter((image) => !dropped.has(image))
+  // Är originalmappen bildbankens egen original/ finns inget att kopiera.
+  const bankOriginals = await findDirectory(bank, 'original')
+  const inBank = bankOriginals ? await bankOriginals.isSameEntry(current.originals) : false
+  const copied = copy && !inBank ? await copyOriginals(current, images) : null
+
+  post({ type: 'progress', phase: 'save', done: 0, total: 1 })
   const duplicates: IndexDuplicate[] = [
     ...current.duplicates,
     ...[...dropped].map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
   ]
-  // Bilder som inte finns kvar i bildbanken behöver inga miniatyrer.
-  const kept = new Set(images.map((image) => image.id))
-  for (const record of [...plan.removed, ...dropped.keys()]) {
-    if (!kept.has(record.id)) await removeImages(current, record.id)
-  }
   const index: IndexFile = {
     version: INDEX_VERSION,
     generatedAt: new Date().toISOString(),
@@ -320,11 +352,19 @@ async function runImport(current: Session) {
   }
   await writeIndexFile(await ensureDirectory(bank, 'app-data'), JSON.stringify(index, null, 2))
   await journal.remove()
+  // Bilder som inte finns kvar i bildbanken behöver inga miniatyrer. De tas
+  // bort först när det nya indexet är sparat, så att inget försvinner om
+  // skrivningen misslyckas.
+  const kept = new Set(images.map((image) => image.id))
+  for (const record of [...plan.removed, ...dropped.keys()]) {
+    if (!kept.has(record.id)) await removeImages(current, record.id)
+  }
   session = null
   return {
     processed: work.length,
     total: images.length,
     duplicates: [...dropped].map(([image, kept]) => ({ path: image.path, sameAs: kept.path })),
+    copied,
   }
 }
 
@@ -343,7 +383,7 @@ async function handle(message: ToWorker) {
       post({ type: 'scanned', summary: await scan(message.bank, message.originals) })
     } else {
       if (!session) throw new Error('Sök efter ändringar först.')
-      post({ type: 'imported', result: await runImport(session) })
+      post({ type: 'imported', result: await runImport(session, message.copyOriginals) })
     }
   } catch (error) {
     if (error instanceof Aborted) post({ type: 'aborted', phase: error.phase, done: error.done, total: error.total })

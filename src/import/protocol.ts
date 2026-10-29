@@ -2,12 +2,13 @@
 
 export type ToWorker =
   | { type: 'scan'; bank: FileSystemDirectoryHandle; originals: FileSystemDirectoryHandle }
-  | { type: 'import' }
+  // copyOriginals: kopiera nya original till bildbankens original/.
+  | { type: 'import'; copyOriginals: boolean }
   | { type: 'abort' }
   // Svar på frame-request: en stillbild ur filmen, eller null om den inte gick att läsa.
   | { type: 'frame'; requestId: number; bitmap: ImageBitmap | null }
 
-export type Phase = 'scan' | 'hash' | 'import' | 'save'
+export type Phase = 'scan' | 'hash' | 'import' | 'copy' | 'save'
 
 export interface ScanSummary {
   new: string[]
@@ -31,6 +32,9 @@ export interface ImportResult {
   total: number
   // Filer med samma namn och tagningstid som en annan bild, som inte togs med.
   duplicates: { path: string; sameAs: string }[]
+  // Kopieringen till bildbankens original/, eller null om den inte valdes.
+  // notOverwritten: filer som redan fanns med annat innehåll och inte skrevs över.
+  copied: { copied: number; notOverwritten: string[] } | null
 }
 
 export type FromWorker =

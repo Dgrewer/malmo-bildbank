@@ -26,6 +26,7 @@ const PHASE_TEXT: Record<Phase, string> = {
   scan: 'Letar efter bilder',
   hash: 'Räknar fingeravtryck',
   import: 'Importerar',
+  copy: 'Kopierar original',
   save: 'Sparar index',
 }
 
@@ -60,14 +61,30 @@ export function AdminView({ bank, onClose }: Props) {
   const [originals, setOriginals] = useState<Originals>({ kind: 'none' })
   const [state, setState] = useState<State>({ kind: 'idle' })
   const [changed, setChanged] = useState(false)
+  // Kopiera nya original till bildbankens original/. Avstängt som standard.
+  const [copy, setCopy] = useState(false)
   const worker = useRef<Worker | null>(null)
+
+  // Har användaren valt bildbankens egen original/ finns inget att kopiera.
+  // Bildbankens egen mapp innehåller app-data och är ingen originalmapp.
+  async function ready(handle: FileSystemDirectoryHandle): Promise<Originals> {
+    if ((await handle.isSameEntry(bank)) || (await findDirectory(handle, 'app-data'))) {
+      throw new Error(
+        `”${handle.name}” är bildbankens mapp. Välj mappen som innehåller fotografernas mappar, ` +
+          'eller Använd bildbankens original.',
+      )
+    }
+    const bankOriginals = await findDirectory(bank, 'original')
+    return { kind: 'ready', handle, inBank: !!bankOriginals && (await bankOriginals.isSameEntry(handle)) }
+  }
 
   useEffect(() => {
     loadOriginalsFolder().then(async (handle) => {
       if (!handle) return
       const permission = await handle.queryPermission({ mode: 'read' })
-      setOriginals(permission === 'granted' ? { kind: 'ready', handle, inBank: false } : { kind: 'reconnect', handle })
-    })
+      setOriginals(permission === 'granted' ? await ready(handle) : { kind: 'reconnect', handle })
+    }).catch((error) => setState({ kind: 'idle', error: errorText(error) }))
+    // ready läser bara bank, som inte ändras medan vyn är öppen.
   }, [])
 
   useEffect(() => {
@@ -109,17 +126,20 @@ export function AdminView({ bank, onClose }: Props) {
   async function chooseOriginals() {
     try {
       const handle = await window.showDirectoryPicker({ id: 'original', mode: 'read' })
+      const chosen = await ready(handle)
       await saveOriginalsFolder(handle)
-      setOriginals({ kind: 'ready', handle, inBank: false })
+      setOriginals(chosen)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
-      setState({ kind: 'idle', error: `Mappen kunde inte öppnas: ${errorText(error)}` })
+      setState({ kind: 'idle', error: errorText(error) })
     }
   }
 
   async function reconnectOriginals(handle: FileSystemDirectoryHandle) {
-    if ((await handle.requestPermission({ mode: 'read' })) === 'granted') {
-      setOriginals({ kind: 'ready', handle, inBank: false })
+    try {
+      if ((await handle.requestPermission({ mode: 'read' })) === 'granted') setOriginals(await ready(handle))
+    } catch (error) {
+      setState({ kind: 'idle', error: errorText(error) })
     }
   }
 
@@ -137,7 +157,7 @@ export function AdminView({ bank, onClose }: Props) {
 
   function startImport() {
     setState({ kind: 'running', phase: 'import', done: 0, total: 0, stopping: false })
-    send({ type: 'import' })
+    send({ type: 'import', copyOriginals: copy && originals.kind === 'ready' && !originals.inBank })
   }
 
   function abort() {
@@ -221,7 +241,16 @@ export function AdminView({ bank, onClose }: Props) {
         </section>
       )}
 
-      {state.kind === 'preview' && <Preview summary={state.summary} onImport={startImport} onRescan={scan} />}
+      {state.kind === 'preview' && (
+        <Preview summary={state.summary} onImport={startImport} onRescan={scan}>
+          {originals.kind === 'ready' && !originals.inBank && (
+            <label className="copy-originals">
+              <input type="checkbox" checked={copy} onChange={(event) => setCopy(event.target.checked)} />
+              Kopiera nya original till bildbankens original/
+            </label>
+          )}
+        </Preview>
+      )}
 
       {state.kind === 'aborted' && (
         <section className="import-result">
@@ -249,15 +278,38 @@ export function AdminView({ bank, onClose }: Props) {
             items={state.result.duplicates}
             render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
           />
+          {state.result.copied && (
+            <p className="copy-result">
+              {count(state.result.copied.copied)} original kopierades till bildbankens original/.
+            </p>
+          )}
+          <PathList
+            title="Fanns redan i bildbankens original/ med annat innehåll, skrevs inte över"
+            items={state.result.copied?.notOverwritten ?? []}
+          />
         </section>
       )}
     </main>
   )
 }
 
-function Preview({ summary, onImport, onRescan }: { summary: ScanSummary; onImport: () => void; onRescan: () => void }) {
+interface PreviewProps {
+  summary: ScanSummary
+  onImport: () => void
+  onRescan: () => void
+  // Val som visas före knapparna, t.ex. kopieringen av original.
+  children?: ReactNode
+}
+
+function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
   const work = summary.new.length + summary.changed.length + summary.moved.length
   const nothing = work === 0 && summary.removed.length === 0
+  // Bilder som tas bort förlorar sina taggar och rättigheter i indexet. Har fel
+  // originalmapp valts ser det ut som att alla bilder har tagits bort, så
+  // borttagningen måste bekräftas.
+  const [confirmed, setConfirmed] = useState(false)
+  const removing = summary.removed.length
+  const total = removing + summary.unchanged + summary.changed.length + summary.moved.length
   return (
     <section className="import-preview">
       <h3>Det här händer vid importen</h3>
@@ -291,6 +343,19 @@ function Preview({ summary, onImport, onRescan }: { summary: ScanSummary; onImpo
         render={(item: { from: string; to: string }) => `${item.from} → ${item.to}`}
       />
       <PathList title="Borttagna, tas bort ur bildbanken" items={summary.removed} />
+      {removing > 0 && (
+        <div className="warning remove-warning" role="alert">
+          <p>
+            {count(removing)} av {count(total)} bilder i bildbanken finns inte i originalmappen och tas bort ur
+            bildbanken, med sina taggar och rättigheter.
+            {removing === total && ' Det är alla bilder. Kontrollera att du har valt rätt originalmapp.'}
+          </p>
+          <label>
+            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+            Ta bort {count(removing)} bilder ur bildbanken
+          </label>
+        </div>
+      )}
       <PathList
         title="Dubbletter med exakt samma innehåll, importeras inte"
         items={summary.exactDuplicates}
@@ -302,8 +367,9 @@ function Preview({ summary, onImport, onRescan }: { summary: ScanSummary; onImpo
         render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
       />
       <PathList title="Inte bilder eller video, hoppas över" items={summary.skipped} />
+      {children}
       <div className="actions">
-        <button type="button" className="primary" onClick={onImport}>
+        <button type="button" className="primary" disabled={removing > 0 && !confirmed} onClick={onImport}>
           {summary.resumed > 0 ? 'Fortsätt importen' : nothing ? 'Uppdatera index' : 'Starta import'}
         </button>
         <button type="button" onClick={onRescan}>
