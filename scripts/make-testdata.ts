@@ -22,9 +22,12 @@
 // - RAW (cr2, cr3, nef, arw, dng) avkodas inte. En JPG med samma namn i samma
 //   mapp blir förhandsbild, och paret blir en bild med RAW-filen som original
 //   och JPG:en i alternates. Utan JPG används den största JPG som är inbäddad i
-//   RAW-filen. Finns ingen av dem hoppas filen över med en varning.
+//   RAW-filen.
 // - Video (mp4, mov, m4v) spelas inte upp. ffmpeg (ffmpeg-static) tar ut en
 //   bildruta som blir miniatyr och förhandsbild, och läser längd och inspelningstid.
+//   Saknas ffmpeg laddas det ner automatiskt (se findFfmpeg).
+// - Kan förhandsbilden inte skapas kommer filen ändå med i indexet, med en
+//   förklaring i previewProblem. Appen visar då en !-ikon och förklaringen.
 //
 // Villkor, rättighetsdatum, samtycke och spärr finns inte i bildfilerna. Skriptet
 // fyller i varierade testvärden så att varningarna i appen kan testas.
@@ -194,6 +197,57 @@ async function embeddedJpeg(data: Buffer): Promise<Buffer | null> {
 
 const run = promisify(execFile)
 
+// Ett fel som förklarar för användaren varför förhandsbilden saknas. Meddelandet
+// visas i appen som det är. Andra fel får ett allmänt inledande meddelande.
+class PreviewProblem extends Error {}
+
+const FFMPEG_MISSING =
+  'Stillbilden kunde inte skapas eftersom programmet ffmpeg saknas på datorn som indexerade bildbanken, ' +
+  'och det gick inte att ladda ner automatiskt. Gör så här på den datorn: kör npm install-scripts approve ' +
+  'ffmpeg-static, sedan npm install och sist npm run make-testdata.'
+
+async function works(binary: string): Promise<boolean> {
+  return run(binary, ['-version']).then(
+    () => true,
+    () => false,
+  )
+}
+
+// ffmpeg letas upp i den här ordningen:
+// 1. FFMPEG_PATH, om den är satt. Då provas inget annat.
+// 2. ffmpeg-static i node_modules.
+// 3. ffmpeg på PATH.
+// 4. ffmpeg-static:s installationsskript, som laddar ner ffmpeg från GitHub. npm kör
+//    det inte självt för en ny version av paketet förrän den har godkänts.
+async function findFfmpeg(): Promise<string> {
+  if (process.env.FFMPEG_PATH) {
+    if (await works(process.env.FFMPEG_PATH)) return process.env.FFMPEG_PATH
+    throw new PreviewProblem(FFMPEG_MISSING)
+  }
+  if (ffmpegPath && existsSync(ffmpegPath)) return ffmpegPath
+  if (await works('ffmpeg')) return 'ffmpeg'
+  if (ffmpegPath) {
+    console.log('\nffmpeg saknas, laddar ner det med ffmpeg-static…')
+    const installer = path.join(path.dirname(ffmpegPath), 'install.js')
+    const installed = await run(process.execPath, [installer], { cwd: path.dirname(installer) }).then(
+      () => existsSync(ffmpegPath!),
+      (error: { stderr?: string }) => {
+        console.warn(`Nedladdningen misslyckades: ${error.stderr?.trim() || error}`)
+        return false
+      },
+    )
+    if (installed) return ffmpegPath
+  }
+  throw new PreviewProblem(FFMPEG_MISSING)
+}
+
+// Letas bara upp en gång, och bara om det finns videor.
+let ffmpeg: Promise<string> | null = null
+function ffmpegBinary(): Promise<string> {
+  ffmpeg ??= findFfmpeg()
+  return ffmpeg
+}
+
 interface VideoInfo {
   durationSeconds: number | null
   takenAt: string | null
@@ -201,7 +255,7 @@ interface VideoInfo {
 
 // ffmpeg utan utfil skriver filens uppgifter till stderr och avslutar med fel.
 async function probeVideo(file: string): Promise<VideoInfo> {
-  const output = await run(ffmpegPath!, ['-hide_banner', '-i', file]).then(
+  const output = await run(await ffmpegBinary(), ['-hide_banner', '-i', file]).then(
     (result) => result.stderr,
     (error: { stderr?: string }) => error.stderr ?? '',
   )
@@ -224,7 +278,7 @@ async function probeVideo(file: string): Promise<VideoInfo> {
 // ffmpeg vänder bildrutan enligt filmens rotation.
 async function videoFrame(file: string, at: number): Promise<Buffer> {
   const { stdout } = await run(
-    ffmpegPath!,
+    await ffmpegBinary(),
     ['-hide_banner', '-loglevel', 'error', '-ss', String(at), '-i', file]
       .concat(['-map', '0:v:0', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']),
     { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
@@ -234,9 +288,6 @@ async function videoFrame(file: string, at: number): Promise<Buffer> {
 }
 
 async function decodeVideo(file: string) {
-  if (!ffmpegPath || !existsSync(ffmpegPath)) {
-    throw new Error('ffmpeg saknas. Kör npm install-scripts approve ffmpeg-static och sedan npm install.')
-  }
   const video = await probeVideo(file)
   const frame = await videoFrame(file, Math.min(1, (video.durationSeconds ?? 0) / 2))
   return { decoded: await decodeWithSharp(frame), tags: null, video }
@@ -262,7 +313,12 @@ async function decode(source: Source): Promise<{ decoded: Decoded; tags: any; vi
     return { decoded, tags }
   }
   const jpeg = await embeddedJpeg(data)
-  if (!jpeg) throw new Error('RAW-filen saknar både JPG med samma namn och inbäddad förhandsbild')
+  if (!jpeg) {
+    throw new PreviewProblem(
+      'RAW-filen saknar förhandsbild. Det finns ingen JPG med samma namn i mappen, och ingen JPG inbäddad i ' +
+        'filen. Lägg en JPG med samma namn bredvid RAW-filen och kör indexeringen igen.',
+    )
+  }
   const orientation = typeof tags?.Orientation === 'number' ? tags.Orientation : undefined
   return { decoded: await decodeWithSharp(jpeg, orientation), tags }
 }
@@ -350,6 +406,32 @@ async function makeRecord(source: Source, id: string, n: number): Promise<ImageR
     description: text(tags?.Caption) || text(tags?.ImageDescription) || text(tags?.description),
     alternates: source.alternates.map((alternate) => alternate.path),
     durationSeconds: video?.durationSeconds ?? null,
+    previewProblem: null,
+  }
+}
+
+// En fil vars förhandsbild inte kunde skapas finns ändå med i indexet. Appen
+// visar en !-ikon och förklaringen i stället för bilden.
+async function problemRecord(source: Source, id: string, n: number, error: unknown): Promise<ImageRecord> {
+  await fs.rm(path.join(ROOT, thumbPath(id)), { force: true })
+  await fs.rm(path.join(ROOT, previewPath(id)), { force: true })
+  return {
+    id,
+    path: source.path,
+    photographer: source.photographer,
+    byline: `Foto: ${source.photographer}`,
+    ...testRights(n),
+    width: 0,
+    height: 0,
+    takenAt: null,
+    tags: [],
+    description: '',
+    alternates: source.alternates.map((alternate) => alternate.path),
+    durationSeconds: null,
+    previewProblem:
+      error instanceof PreviewProblem
+        ? error.message
+        : `Förhandsbilden kunde inte skapas: ${error instanceof Error ? error.message : error}`,
   }
 }
 
@@ -423,7 +505,8 @@ async function main() {
       try {
         results[n] = await makeRecord(jobs[n].source, jobs[n].id, n)
       } catch (error) {
-        failures.push(`  Hoppar över ${jobs[n].source.path}: ${error instanceof Error ? error.message : error}`)
+        results[n] = await problemRecord(jobs[n].source, jobs[n].id, n, error)
+        failures.push(`  Ingen förhandsbild för ${jobs[n].source.path}: ${results[n]!.previewProblem}`)
       }
       process.stdout.write(`\r  ${++done}/${jobs.length}`)
     }

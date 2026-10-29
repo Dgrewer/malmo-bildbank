@@ -54,6 +54,8 @@ Indexformatet beskrivs i `docs/index-format.md`.
 - RAW (cr2, cr3, nef, arw, dng) avkodas inte. Förhandsbilden skapas från en JPG med samma namn i samma mapp, och annars från den JPG som är inbäddad i RAW-filen.
 - En RAW-fil och en JPG med samma namn är samma bild. Paret visas som en bild i galleriet, RAW-filen är originalet och JPG:en ligger i `alternates`.
 - Video (mp4, mov, m4v) visas men spelas inte upp. ffmpeg tar ut en stillbild ur filmen som miniatyr och förhandsbild. Rutnätet märker filmerna med "Video" och längden.
+- Saknas ffmpeg vid indexeringen laddas det ner automatiskt.
+- En fil vars förhandsbild inte kan skapas hoppas inte över. Den visas med en !-ikon och en förklaring av vad som gick fel och vad som behöver göras (fältet `previewProblem`).
 - Chrome och Edge kan inte visa HEIC eller RAW, så appen visar alltid miniatyrer och förhandsbilder i WebP, aldrig originalen.
 
 ## Dubbletter

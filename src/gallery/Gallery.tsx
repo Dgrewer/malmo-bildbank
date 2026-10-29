@@ -84,10 +84,25 @@ function Thumbnail({ index, image, thumbs, left, top, size, onOpen }: ThumbnailP
       data-index={index}
       style={{ transform: `translate(${left}px, ${top}px)`, width: size, height: size }}
       onClick={() => onOpen(index)}
-      aria-label={`${image.id}, ${isVideo(image.path) ? 'video' : 'foto'} ${image.photographer}${image.blocked ? ', spärrad' : ''}`}
+      aria-label={
+        `${image.id}, ${isVideo(image.path) ? 'video' : 'foto'} ${image.photographer}` +
+        `${image.blocked ? ', spärrad' : ''}${image.previewProblem ? ', förhandsbild saknas' : ''}`
+      }
+      title={image.previewProblem ?? undefined}
     >
-      {thumb.status === 'ready' && <img src={thumb.url} alt="" draggable={false} />}
-      {thumb.status === 'missing' && <span className="thumb-missing">Miniatyr saknas</span>}
+      {image.previewProblem ? (
+        <span className="thumb-problem">
+          <span className="problem-icon" aria-hidden="true">
+            !
+          </span>
+          {isVideo(image.path) ? 'Stillbild saknas' : 'Förhandsbild saknas'}
+        </span>
+      ) : (
+        <>
+          {thumb.status === 'ready' && <img src={thumb.url} alt="" draggable={false} />}
+          {thumb.status === 'missing' && <span className="thumb-missing">Miniatyr saknas</span>}
+        </>
+      )}
       {image.blocked && <span className="badge-blocked">Spärrad</span>}
       {isVideo(image.path) && (
         <span className="badge-video">

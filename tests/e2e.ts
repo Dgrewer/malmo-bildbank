@@ -171,7 +171,7 @@ async function waitForThumbnails(page: Page) {
         }) &&
         cells.every((cell) => {
           const image = cell.querySelector('img')
-          return cell.querySelector('.thumb-missing') || (image && image.complete && image.naturalWidth > 0)
+          return cell.querySelector('.thumb-missing, .thumb-problem') || (image && image.complete && image.naturalWidth > 0)
         })
       )
     },
@@ -269,7 +269,7 @@ try {
       if (!Array.isArray(index.images) || index.images.length === 0) return ['images saknas']
 
       const ids = new Set<string>()
-      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'alternates', 'durationSeconds']
+      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'alternates', 'durationSeconds', 'previewProblem']
         .concat(['width', 'height', 'takenAt', 'tags', 'description'])
       for (const image of index.images) {
         const where = image.id ?? JSON.stringify(image).slice(0, 40)
@@ -288,6 +288,7 @@ try {
         }
         if (typeof image.blocked !== 'boolean' || !Array.isArray(image.tags)) errors.push(`${where}: typer`)
 
+        if (image.previewProblem) continue
         for (const [folder, size] of [['thumbs', 400], ['previews', 1600]] as const) {
           const file = await (await (await appData.getDirectoryHandle(folder)).getFileHandle(`${image.id}.webp`))
             .getFile()
@@ -324,6 +325,7 @@ try {
     description: '',
     alternates: [],
     durationSeconds: null,
+    previewProblem: null,
   })
 
   await test('Dubbletter: den med högst upplösning behålls', async () => {
@@ -395,7 +397,7 @@ try {
   console.log('3.5 Detaljvy')
 
   const index: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
-  const find = (match: (image: ImageRecord) => boolean) => index.images.findIndex(match)
+  const find = (match: (image: ImageRecord) => boolean) => index.images.findIndex((i) => !i.previewProblem && match(i))
   const isRaw = (i: ImageRecord) => fileFormat(i.path).startsWith('RAW')
   const cases = [
     { name: 'spärrad bild', index: find((i) => i.blocked) },
@@ -472,6 +474,35 @@ try {
       assert(state.live === state.loaded, `Förhandsbildens URL frigjordes inte (${state.live} levande)`)
     })
   }
+
+  // Om testdatat har en fil utan förhandsbild, t.ex. en RAW-fil utan JPG eller en
+  // video när ffmpeg saknas (FFMPEG_PATH=saknas npm run make-testdata).
+  const problemIndex = index.images.findIndex((i) => i.previewProblem)
+  await test('3.5 fil utan förhandsbild visar !-ikon och förklaring', async () => {
+    assert(problemIndex >= 0, 'Testdata saknar en fil utan förhandsbild')
+    const page = detailPage!
+    const image = index.images[problemIndex]
+    await page.waitForFunction(
+      (n) => {
+        if (document.querySelector(`.gallery-cell[data-index="${n}"]`)) return true
+        document.querySelector('.gallery')!.scrollTop += 200
+        return false
+      },
+      { timeout: 10_000, polling: 50 },
+      problemIndex,
+    )
+    const cell = `.gallery-cell[data-index="${problemIndex}"]`
+    const title = await page.$eval(cell, (element) => element.getAttribute('title'))
+    assert(await page.$(`${cell} .thumb-problem .problem-icon`), 'Rutan saknar !-ikonen')
+    assert(title === image.previewProblem, 'Rutan förklarar inte problemet när man håller musen över den')
+    await page.locator(cell).click()
+    await page.waitForSelector('dialog.detail[open] .problem', { timeout: 5_000 })
+    await screenshot(page, '3.5-utan-forhandsbild')
+    const text = await page.$eval('dialog.detail[open] .problem', (element) => (element as HTMLElement).innerText)
+    assert(text.includes(image.previewProblem!), 'Detaljvyn visar inte förklaringen')
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
+  })
   await (detailPage as Page | null)?.close()
 } finally {
   await browser.close()

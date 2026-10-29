@@ -30,8 +30,19 @@ export function DetailView({ image, previews, onClose }: Props) {
       onClick={(event) => event.target === dialog.current && dialog.current.close()}
     >
       <div className="detail-preview">
-        {preview.status === 'ready' && <img src={preview.url} alt={image.description || `Bild ${image.id}`} />}
-        {preview.status === 'missing' && <p>Förhandsbild saknas</p>}
+        {image.previewProblem ? (
+          <div className="preview-problem">
+            <span className="problem-icon" aria-hidden="true">
+              !
+            </span>
+            <p>{isVideo(image.path) ? 'Stillbild saknas' : 'Förhandsbild saknas'}</p>
+          </div>
+        ) : (
+          <>
+            {preview.status === 'ready' && <img src={preview.url} alt={image.description || `Bild ${image.id}`} />}
+            {preview.status === 'missing' && <p>Förhandsbild saknas</p>}
+          </>
+        )}
       </div>
       <div className="detail-info">
         <div className="detail-header">
@@ -41,6 +52,14 @@ export function DetailView({ image, previews, onClose }: Props) {
           </button>
         </div>
 
+        {image.previewProblem && (
+          <p className="problem" role="alert">
+            <span className="problem-icon" aria-hidden="true">
+              !
+            </span>
+            <span>{image.previewProblem}</span>
+          </p>
+        )}
         {image.blocked && (
           <p className="blocked-banner" role="alert">
             <strong>Spärrad.</strong> Bilden får inte användas.
@@ -52,7 +71,9 @@ export function DetailView({ image, previews, onClose }: Props) {
           </p>
         )}
         {isVideo(image.path) && (
-          <p className="note">Videon kan inte spelas upp i bildbanken. Bilden är en stillbild ur filmen.</p>
+          <p className="note">
+            Videon kan inte spelas upp i bildbanken.{!image.previewProblem && ' Bilden är en stillbild ur filmen.'}
+          </p>
         )}
         {image.consent === 'missing' && (
           <p className="warning" role="alert">

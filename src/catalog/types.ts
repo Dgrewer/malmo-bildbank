@@ -28,6 +28,8 @@ export interface ImageRecord {
   description: string
   alternates: string[]
   durationSeconds: number | null
+  // Varför förhandsbilden saknas, eller null om den finns.
+  previewProblem: string | null
 }
 
 export function formatId(n: number): string {
