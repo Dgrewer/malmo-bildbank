@@ -103,8 +103,74 @@ async function bodyText(page: Page): Promise<string> {
   return page.evaluate(() => document.body.innerText)
 }
 
+// SCREENSHOTS=<mapp> sparar skärmbilder för manuell granskning.
+async function screenshot(page: Page, name: string) {
+  if (!process.env.SCREENSHOTS) return
+  await fs.mkdir(process.env.SCREENSHOTS, { recursive: true })
+  await page.screenshot({ path: path.join(process.env.SCREENSHOTS, `${name}.png`) })
+}
+
 async function clickButton(page: Page, text: string) {
   await page.locator(`button::-p-text(${text})`).click()
+}
+
+// Körs i sidan före appen: räknar object-URL:er som skapas och frigörs.
+function countObjectUrls() {
+  const live = new Set<string>()
+  const stats = { created: 0, revoked: 0, live }
+  ;(window as unknown as { __urlStats: typeof stats }).__urlStats = stats
+  const create = URL.createObjectURL.bind(URL)
+  const revoke = URL.revokeObjectURL.bind(URL)
+  URL.createObjectURL = (object) => {
+    const url = create(object)
+    stats.created++
+    live.add(url)
+    return url
+  }
+  URL.revokeObjectURL = (url) => {
+    stats.revoked++
+    live.delete(url)
+    revoke(url)
+  }
+}
+
+async function galleryState(page: Page) {
+  return page.evaluate(() => {
+    const stats = (window as unknown as { __urlStats: { created: number; revoked: number; live: Set<string> } })
+      .__urlStats
+    const cells = [...document.querySelectorAll<HTMLElement>('.gallery-cell')]
+    const images = [...document.querySelectorAll<HTMLImageElement>('.gallery-cell img')]
+    return {
+      cells: cells.length,
+      loaded: images.filter((image) => image.complete && image.naturalWidth > 0).length,
+      lastIndex: Math.max(...cells.map((cell) => Number(cell.dataset.index))),
+      created: stats.created,
+      revoked: stats.revoked,
+      live: stats.live.size,
+    }
+  })
+}
+
+// Väntar tills rutnätet har ritat rutor inom den synliga ytan och varje ruta har
+// en inläst miniatyr (eller visar att den saknas).
+async function waitForThumbnails(page: Page) {
+  await page.waitForFunction(
+    () => {
+      const view = document.querySelector('.gallery')!.getBoundingClientRect()
+      const cells = [...document.querySelectorAll('.gallery-cell')]
+      return (
+        cells.some((cell) => {
+          const rect = cell.getBoundingClientRect()
+          return rect.top >= view.top && rect.bottom <= view.bottom
+        }) &&
+        cells.every((cell) => {
+          const image = cell.querySelector('img')
+          return cell.querySelector('.thumb-missing') || (image && image.complete && image.naturalWidth > 0)
+        })
+      )
+    },
+    { timeout: 30_000 },
+  )
 }
 
 const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'error' })
@@ -138,6 +204,7 @@ try {
   await test('3.2 mapp utan original och app-data ger felmeddelande', async () => {
     const page = await openPage('/?testdata=Original')
     await waitForText(page, 'saknar undermapparna original och app-data')
+    await screenshot(page, '3.2-fel-mapp')
     await page.close()
   })
 
@@ -230,6 +297,37 @@ try {
       return errors
     })
     assert(errors.length === 0, errors.join('\n      '))
+    await page.close()
+  })
+
+  console.log('3.4 Galleri')
+
+  await test('3.4 rutnätet visar 3 000 bilder men bara de synliga finns i DOM:en', async () => {
+    const page = await openPage('/?testdata&repeat=3000', (p) => p.evaluateOnNewDocument(countObjectUrls))
+    await page.waitForFunction(() => /3\s000 bilder/.test(document.body.innerText), { timeout: 30_000 })
+    await waitForThumbnails(page)
+    await screenshot(page, '3.4-galleri')
+    const start = await galleryState(page)
+    assert(start.cells > 0 && start.cells < 200, `${start.cells} rutor i DOM:en`)
+    assert(start.created <= start.cells * 2, `${start.created} object-URL:er skapade för ${start.cells} rutor`)
+    assert(start.live === start.loaded, `${start.live} levande URL:er men ${start.loaded} visade miniatyrer`)
+
+    for (const fraction of [0.25, 0.5, 0.75, 1]) {
+      await page.evaluate((f) => {
+        const gallery = document.querySelector('.gallery')!
+        gallery.scrollTop = f * (gallery.scrollHeight - gallery.clientHeight)
+      }, fraction)
+      await waitForThumbnails(page)
+      const state = await galleryState(page)
+      assert(state.cells < 200, `${state.cells} rutor i DOM:en vid ${fraction * 100} %`)
+      assert(state.live === state.loaded, `Läcka vid ${fraction * 100} %: ${state.live} URL:er, ${state.loaded} miniatyrer`)
+    }
+    const end = await galleryState(page)
+    assert(end.lastIndex === 2999, `Sista rutan är ${end.lastIndex}, inte 2999`)
+    assert(end.revoked > 0, 'Inga object-URL:er frigjordes')
+    console.log(
+      `      ${end.cells} rutor i DOM:en, ${end.created} URL:er skapade, ${end.revoked} frigjorda, ${end.live} levande`,
+    )
     await page.close()
   })
 } finally {

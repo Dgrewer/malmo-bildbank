@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { checkRoot } from './fs/folder.ts'
 import { loadFolder, saveFolder } from './fs/folderStore.ts'
+import { Library } from './Library.tsx'
 
 // File System Access API (showDirectoryPicker) finns bara i Chromium-baserade
 // webbläsare, därför stöds endast Chrome och Edge.
@@ -80,17 +81,7 @@ function App() {
   }
 
   if (state.kind === 'connected') {
-    return (
-      <div className="app">
-        <header className="topbar">
-          <h1>Malmö Bildbank</h1>
-          <span className="folder-name">{state.root.name}</span>
-          <button type="button" onClick={chooseFolder}>
-            Byt mapp
-          </button>
-        </header>
-      </div>
-    )
+    return <Library root={state.root} onChangeFolder={chooseFolder} />
   }
 
   return (

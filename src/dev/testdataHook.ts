@@ -5,6 +5,7 @@
 //   ?testdata               hela testdata/
 //   ?testdata=Original      en undermapp, t.ex. för att testa felmeddelanden
 //   &skip=app-data          hoppa över en mapp på översta nivån
+//   &repeat=3000            upprepa indexets poster till 3 000 bilder
 //
 // Utvecklingsservern lägger in den här filen som ett eget skript före appen
 // (se testdataServer i vite.config.ts). Appen importerar den aldrig, så den
@@ -15,6 +16,7 @@
 declare global {
   interface Window {
     __bildbankTestFolder?: Promise<FileSystemDirectoryHandle>
+    __bildbankTestRepeat?: number
   }
 }
 
@@ -55,5 +57,6 @@ async function loadTestdataFolder(params: URLSearchParams): Promise<FileSystemDi
 
 const params = new URLSearchParams(location.search)
 if (params.has('testdata')) window.__bildbankTestFolder = loadTestdataFolder(params)
+if (params.has('repeat')) window.__bildbankTestRepeat = Number(params.get('repeat'))
 
 export {}
