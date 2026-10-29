@@ -94,4 +94,7 @@ function testdataServer(): Plugin {
 
 export default defineConfig({
   plugins: [react(), contentSecurityPolicy(), testdataServer()],
+  // Workern importeras först när importen startar. Utan listan upptäcker
+  // utvecklingsservern beroendena först då och laddar om sidan mitt i importen.
+  optimizeDeps: { include: ['exifr'] },
 })

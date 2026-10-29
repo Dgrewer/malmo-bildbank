@@ -30,6 +30,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `generatedAt` | sträng | När indexet skapades, ISO 8601 i UTC. |
 | `lastId` | heltal | Högsta id-numret som någonsin har delats ut. Nya bilder får nästa nummer, så ett id återanvänds aldrig, inte ens när bilden har tagits bort. Saknas i äldre index, och räknas då från bildernas och de flyttade dubbletternas id. |
 | `images` | lista | En post per bild, sorterad efter id. |
+| `duplicates` | lista | Filer som importen har valt bort som dubbletter, se Import. Varje post har `path`, `hash` och `keptId`, id:t för bilden som behölls. Saknas i äldre index. |
 
 ## En post
 
@@ -88,6 +89,10 @@ Importen körs i appen, under Importera. Originalmappen väljs per dator, och ka
 - Bilder känns igen på `hash`, så en flyttad eller omdöpt fil behåller sitt id. Finns inget fingeravtryck med samma värde matchas filen på `path`.
 - Nya bilder får `lastId + 1` och framåt. Befintliga id ändras aldrig.
 - Filer med exakt samma innehåll importeras en gång. Importen flyttar och ändrar aldrig något i originalmappen.
+- Av filer med samma namn (oavsett mapp och versaler) och samma tagningstid, när båda har en, behålls den med högst upplösning, och vid lika upplösning den med lägst id. De andra hamnar i `duplicates` och importeras inte igen så länge bilden som behölls finns kvar.
+- Metadata läses med exifr ur EXIF, IPTC och XMP för nya och ändrade filer: byline (IPTC Byline, EXIF Artist eller XMP creator, annars `Foto: <fotograf>`), tagningstid, nyckelord, bildtext och storlek. IPTC-text som är UTF-8 men lästs som Latin-1 ("MalmÃ¶") avkodas om. Texter som kameror skriver in automatiskt, t.ex. "OLYMPUS DIGITAL CAMERA", tas bort. Saknar en RAW-fil metadata används JPG:en bredvid den.
+- För film läses längd och inspelningstid ur filens mvhd-box. Tiden är i UTC i filen och lagras som lokal tid.
+- Nya bilder får `consent: "not-required"`, tomma villkor och inget slutdatum.
 - Bilder vars fil inte finns kvar tas bort ur indexet. Deras id delas inte ut igen.
 - Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.

@@ -29,6 +29,8 @@ import {
   RAW_EXTENSIONS,
 } from '../src/catalog/fileFormat.ts'
 import { combinedHash, quickHash } from '../src/import/hash.ts'
+import { readMetadata } from '../src/import/metadata.ts'
+import { readVideoInfo } from '../src/import/video.ts'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
@@ -192,8 +194,9 @@ async function waitForThumbnails(page: Page) {
 }
 
 // Går igenom originalmappen med samma regler som importen: systemfiler hoppas
-// över, en RAW-fil och en JPG med samma namn är en bild, och filer med samma
-// innehåll räknas en gång.
+// över, en RAW-fil och en JPG med samma namn är en bild, filer med samma
+// innehåll räknas en gång, och av filer med samma namn och tagningstid behålls
+// den med högst upplösning. Metadata läses med exifr i Node, från hela filen.
 async function expectedImport(root: string) {
   const files: string[][] = []
   const skipped: string[] = []
@@ -222,11 +225,40 @@ async function expectedImport(root: string) {
     }
   }
   await walk(root)
-  const hashes = new Set<string>()
-  for (const parts of files) {
-    hashes.add(await combinedHash(await Promise.all(parts.map(async (part) => quickHash(await openAsBlob(part))))))
+  const byHash = new Map<string, string[]>()
+  for (const parts of files.sort((a, b) => toIndexPath(a[0]).localeCompare(toIndexPath(b[0]), 'sv'))) {
+    const hash = await combinedHash(await Promise.all(parts.map(async (part) => quickHash(await openAsBlob(part)))))
+    if (!byHash.has(hash)) byHash.set(hash, parts)
   }
-  return { unique: hashes.size, duplicates: files.length - hashes.size, skipped, rawPairs }
+  const records: ImageRecord[] = []
+  for (const [hash, [file, companion]] of byHash) {
+    const id = `MB-${String(records.length + 1).padStart(6, '0')}`
+    const photographer = toIndexPath(file).split('/')[1]
+    const base = { ...(await testRecord(id, toIndexPath(file), photographer)), hash }
+    if (isVideo(file)) records.push({ ...base, byline: `Foto: ${photographer}`, ...(await readVideoInfo(await openAsBlob(file))) })
+    else {
+      const metadata = await readMetadata(await fs.readFile(file), companion ? await fs.readFile(companion) : undefined)
+      const { orientation: _, ...fields } = metadata
+      records.push({ ...base, ...fields, byline: metadata.byline || `Foto: ${photographer}` })
+    }
+  }
+  const dropped = findDuplicates(records)
+  return {
+    unique: byHash.size,
+    duplicates: files.length - byHash.size,
+    skipped,
+    rawPairs,
+    kept: records.filter((record) => !dropped.has(record)),
+    dropped: [...dropped].map(([record, kept]) => `${record.path} (behåller ${kept.path})`),
+  }
+}
+
+async function testRecord(id: string, file: string, photographer: string): Promise<ImageRecord> {
+  return {
+    id, path: file, photographer, byline: '', terms: '', rightsUntil: null, consent: 'not-required', blocked: false,
+    width: 0, height: 0, takenAt: null, tags: [], description: '', alternates: [], durationSeconds: null,
+    previewProblem: null, hash: null, fileSize: null, fileModified: null,
+  }
 }
 
 async function readPreview(page: Page) {
@@ -246,6 +278,12 @@ async function readPreview(page: Page) {
     ) as Record<string, string[]>
     return { counts, lists }
   })
+}
+
+const DUPLICATES_TITLE = 'Dubbletter med samma namn och tagningstid, togs inte med'
+
+async function readPreviewLists(page: Page) {
+  return (await readPreview(page)).lists
 }
 
 async function waitForPreview(page: Page) {
@@ -756,12 +794,18 @@ try {
     firstIndexText = (await readOpfs(page, `${bank}/app-data/index.json`))!
     firstIndex = JSON.parse(firstIndexText) as IndexFile
     const ids = firstIndex.images.map((image) => image.id)
-    assert(ids.length === expected.unique, `${ids.length} bilder i indexet, väntade ${expected.unique}`)
+    assert(ids.length === expected.kept.length, `${ids.length} bilder i indexet, väntade ${expected.kept.length}`)
     assert(
-      ids.every((id, n) => id === `MB-${String(n + 1).padStart(6, '0')}`),
-      'Id:n är inte MB-000001 och framåt i följd',
+      JSON.stringify(ids) === JSON.stringify(expected.kept.map((record) => record.id)),
+      'Id:n är inte MB-000001 och framåt i sökvägsordning',
     )
-    assert(firstIndex.lastId === ids.length, `lastId är ${firstIndex.lastId}`)
+    assert(firstIndex.lastId === expected.unique, `lastId är ${firstIndex.lastId}, väntade ${expected.unique}`)
+    const dropped = (await readPreviewLists(page))[DUPLICATES_TITLE] ?? []
+    assert(
+      JSON.stringify(dropped.sort()) === JSON.stringify(expected.dropped.sort()),
+      `Fel dubbletter med samma namn: ${dropped.join(', ')}`,
+    )
+    assert(firstIndex.duplicates?.length === expected.dropped.length, 'Indexet saknar de bortvalda dubbletterna')
     assert(firstIndex.images.every((image) => /^q1-[0-9a-f]{64}$/.test(image.hash ?? '')), 'En bild saknar fingeravtryck')
     assert(firstIndex.images.every((image) => image.consent === 'not-required'), 'Samtycke är inte not-required')
     for (const raw of expected.rawPairs) {
@@ -773,7 +817,35 @@ try {
 
     await clickButton(page, 'Sök efter ändringar')
     const { counts } = await waitForPreview(page)
-    assert(counts.unchanged === expected.unique && counts.new === 0, `Andra sökningen: ${JSON.stringify(counts)}`)
+    assert(counts.unchanged === expected.kept.length && counts.new === 0, `Andra sökningen: ${JSON.stringify(counts)}`)
+    const skippedAgain = (await readPreview(page)).lists[DUPLICATES_TITLE] ?? []
+    assert(skippedAgain.length === expected.dropped.length, 'Bortvalda dubbletter visas inte vid nästa sökning')
+  })
+
+  await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {
+    const fields = ['byline', 'takenAt', 'tags', 'description', 'width', 'height', 'durationSeconds'] as const
+    const differences: string[] = []
+    for (const wanted of expected.kept) {
+      const actual = firstIndex!.images.find((image) => image.path === wanted.path)
+      for (const field of fields) {
+        if (JSON.stringify(actual?.[field]) !== JSON.stringify(wanted[field])) {
+          differences.push(`${wanted.path} ${field}: ${JSON.stringify(actual?.[field])}, väntade ${JSON.stringify(wanted[field])}`)
+        }
+      }
+    }
+    assert(!differences.length, differences.slice(0, 5).join('\n      '))
+    const texts = firstIndex!.images.flatMap((image) => [image.byline, image.description, ...image.tags]).join('\n')
+    assert(!/Ã|Â/.test(texts), 'Felkodade tecken finns kvar')
+    assert(firstIndex!.images.some((image) => image.tags.length), 'Ingen bild fick nyckelord')
+    assert(firstIndex!.images.some((image) => image.description), 'Ingen bild fick bildtext')
+    // Filmens längd och inspelningstid jämförs med vad ffmpeg gav (testdata/app-data).
+    const old: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
+    for (const video of old.images.filter((image) => image.durationSeconds)) {
+      const actual = firstIndex!.images.find((image) => image.path === video.path)
+      assert(actual, `${video.path} saknas`)
+      assert(Math.abs(actual.durationSeconds! - video.durationSeconds!) < 0.1, `${video.path} är ${actual.durationSeconds} s`)
+      assert(actual.takenAt === video.takenAt, `${video.path} togs ${actual.takenAt}, ffmpeg säger ${video.takenAt}`)
+    }
   })
 
   await test('4.1 flyttade och omdöpta filer behåller sitt id', async () => {
@@ -844,6 +916,23 @@ try {
     const expectedId = `MB-${String(firstIndex!.lastId! + 2).padStart(6, '0')}`
     assert(reused?.id === expectedId, `Den nya bilden fick ${reused?.id}, väntade ${expectedId}`)
     firstIndex = after
+  })
+
+  await test('4.1 en JPG som får en RAW-fil bredvid sig behåller sitt id', async () => {
+    const page = importPage!
+    const jpg = pick(firstIndex!, 'Fotograf A', 4)
+    const raw = jpg.path.replace(/\.[^.]+$/, '.CR2')
+    await opfsCopy(page, bank, 'original/Fotograf C/RAW-par.CR2', raw, jpg.id)
+    await clickButton(page, 'Sök efter ändringar')
+    const { counts } = await waitForPreview(page)
+    assert(counts.changed === 1 && counts.new === 0 && counts.removed === 0, JSON.stringify(counts))
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const record = index.images.find((image) => image.id === jpg.id)
+    assert(record?.path === raw, `Paret fick inte JPG:ens id: ${record?.path}`)
+    assert(JSON.stringify(record.alternates) === JSON.stringify([jpg.path]), 'JPG:en ligger inte i alternates')
+    firstIndex = index
   })
 
   await test('4.1 en avbruten import fortsätter där den slutade', async () => {

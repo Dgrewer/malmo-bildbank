@@ -15,6 +15,9 @@ export interface ScanSummary {
   unchanged: number
   // Filer med exakt samma innehåll som en annan fil. Bara en av dem importeras.
   exactDuplicates: { path: string; sameAs: string }[]
+  // Filer med samma namn och tagningstid som en bild med högre upplösning. Valdes
+  // bort vid en tidigare import och importeras inte.
+  nameDuplicates: { path: string; sameAs: string }[]
   // Filer som inte är bilder eller video.
   skipped: string[]
   // Bilder som redan blev klara i en avbruten import.
@@ -24,6 +27,8 @@ export interface ScanSummary {
 export interface ImportResult {
   processed: number
   total: number
+  // Filer med samma namn och tagningstid som en annan bild, som inte togs med.
+  duplicates: { path: string; sameAs: string }[]
 }
 
 export type FromWorker =

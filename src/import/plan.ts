@@ -4,6 +4,8 @@ import { formatId, idNumber, type ImageRecord } from '../catalog/types.ts'
 export interface HashedFile {
   path: string
   hash: string
+  // T.ex. JPG:en bredvid en RAW-fil.
+  alternates: { path: string }[]
 }
 
 // new: ny bild. changed: samma sökväg men nytt innehåll, eller förra försöket
@@ -57,15 +59,17 @@ export function buildPlan<T extends HashedFile>(files: T[], previous: ImageRecor
   const items: PlanItem<T>[] = []
   for (const file of kept) {
     const sameContent = byHash.get(file.hash)
-    const samePath = byPath.get(file.path)
+    // En JPG som får en RAW-fil bredvid sig behåller sitt id.
+    const samePath = [file, ...file.alternates].map((part) => byPath.get(part.path)).find((record) => record && !used.has(record))
     if (sameContent && !used.has(sameContent)) {
       used.add(sameContent)
       const change = sameContent.previewProblem ? 'changed' : sameContent.path === file.path ? 'unchanged' : 'moved'
       items.push({ file, id: sameContent.id, change, previous: sameContent })
-    } else if (samePath && !used.has(samePath)) {
+    } else if (samePath) {
       used.add(samePath)
       // Ett index från före fingeravtrycken saknar hash. Då räknas filen som oförändrad.
-      const change = samePath.hash && samePath.hash !== file.hash ? 'changed' : 'unchanged'
+      const change =
+        samePath.path !== file.path || (samePath.hash && samePath.hash !== file.hash) ? 'changed' : 'unchanged'
       items.push({ file, id: samePath.id, change: samePath.previewProblem ? 'changed' : change, previous: samePath })
     } else {
       items.push({ file, id: formatId(++lastId), change: 'new', previous: null })

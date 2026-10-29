@@ -9,6 +9,16 @@ export interface IndexFile {
   // ett id återanvänds aldrig, inte ens om bilden har tagits bort.
   lastId?: number
   images: ImageRecord[]
+  // Filer som importen har valt bort som dubbletter (samma namn och tagningstid
+  // som en bild med högre upplösning). De importeras inte igen.
+  duplicates?: IndexDuplicate[]
+}
+
+export interface IndexDuplicate {
+  path: string
+  hash: string
+  // Bilden som behölls i stället.
+  keptId: string
 }
 
 // given: samtycke finns. missing: samtycke behövs men saknas.

@@ -5,14 +5,18 @@
 //   import  skapar poster för nya, ändrade och flyttade bilder och skriver indexet
 //   abort   avbryter efter den fil som håller på. Det som är klart sparas.
 
+import { findDuplicates } from '../catalog/duplicates.ts'
+import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
-import { idNumber, INDEX_VERSION, type ImageRecord, type IndexFile } from '../catalog/types.ts'
+import { idNumber, INDEX_VERSION, type IndexDuplicate, type ImageRecord, type IndexFile } from '../catalog/types.ts'
 import { ensureDirectory, readFile, writeIndexFile } from '../fs/folder.ts'
 import { combinedHash, quickHash } from './hash.ts'
 import { Journal, readJournal } from './journal.ts'
+import { readMetadata } from './metadata.ts'
 import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
 import type { FromWorker, Phase, ScanSummary, ToWorker } from './protocol.ts'
 import { scanOriginals, type ScannedFile } from './scan.ts'
+import { readVideoInfo } from './video.ts'
 
 interface HashedScannedFile extends ScannedFile {
   hash: string
@@ -24,6 +28,8 @@ interface Session {
   journal: Journal
   // Poster från en avbruten import, efter id.
   resumed: Map<string, ImageRecord>
+  // Dubbletter med samma namn och tagningstid som tidigare importer har valt bort.
+  duplicates: IndexDuplicate[]
 }
 
 const scope = self as unknown as {
@@ -114,8 +120,19 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
   }
   progress('hash', hashed.length, hashed.length)
 
-  const plan = buildPlan(hashed, previous, lastId)
-  session = { bank, plan, journal: new Journal(bank, journal), resumed }
+  // En fil som en tidigare import valde bort som dubblett importeras inte igen,
+  // så länge bilden som behölls finns kvar.
+  const found = new Set(hashed.map((file) => file.hash))
+  const alive = new Map(previous.filter((record) => record.hash && found.has(record.hash)).map((r) => [r.id, r]))
+  const duplicates = (index?.duplicates ?? []).filter((duplicate) => alive.has(duplicate.keptId) && found.has(duplicate.hash))
+  const skippedHashes = new Set(duplicates.map((duplicate) => duplicate.hash))
+
+  const plan = buildPlan(
+    hashed.filter((file) => !skippedHashes.has(file.hash)),
+    previous,
+    lastId,
+  )
+  session = { bank, plan, journal: new Journal(bank, journal), resumed, duplicates }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -125,6 +142,7 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     removed: plan.removed.map((record) => record.path),
     unchanged: paths('unchanged').length,
     exactDuplicates: plan.exactDuplicates,
+    nameDuplicates: duplicates.map((duplicate) => ({ path: duplicate.path, sameAs: alive.get(duplicate.keptId)!.path })),
     skipped: scanned.skipped,
     resumed: plan.items.filter((item) => resumed.has(item.id)).length,
   }
@@ -158,8 +176,31 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
   }
 }
 
+// Metadata läses för nya och ändrade filer. En flyttad fil har samma innehåll
+// och behåller sina uppgifter.
 async function makeRecord(item: PlanItem<HashedScannedFile>): Promise<ImageRecord> {
-  return baseRecord(item)
+  const record = baseRecord(item)
+  if (item.change === 'moved') return record
+  const file = await item.file.handle.getFile()
+  if (isVideo(file.name)) {
+    const video = await readVideoInfo(file)
+    return { ...record, byline: record.byline || `Foto: ${record.photographer}`, ...video }
+  }
+  const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
+  // exifr läser annars bara början av filen. I TIFF och TIFF-baserade RAW-filer
+  // kan uppgifterna ligga längre in.
+  const ext = extension(file.name)
+  const whole = RAW_EXTENSIONS.has(ext) || TIFF_EXTENSIONS.has(ext)
+  const metadata = await readMetadata(whole ? new Uint8Array(await file.arrayBuffer()) : file, companion)
+  return {
+    ...record,
+    byline: metadata.byline || `Foto: ${record.photographer}`,
+    takenAt: metadata.takenAt,
+    tags: metadata.tags,
+    description: metadata.description,
+    width: metadata.width,
+    height: metadata.height,
+  }
 }
 
 async function runImport(current: Session) {
@@ -181,14 +222,32 @@ async function runImport(current: Session) {
   progress('import', work.length, work.length)
 
   post({ type: 'progress', phase: 'save', done: 0, total: 1 })
-  const images = plan.items
+  const all = plan.items
     .map((item) => records.get(item.id) ?? baseRecord(item))
     .sort((a, b) => idNumber(a.id) - idNumber(b.id))
-  const index: IndexFile = { version: INDEX_VERSION, generatedAt: new Date().toISOString(), lastId: plan.lastId, images }
+  // Av filer med samma namn och tagningstid behålls den med högst upplösning.
+  // De andra tas inte med i indexet, men filerna ligger kvar i originalmappen.
+  const dropped = findDuplicates(all)
+  const images = all.filter((image) => !dropped.has(image))
+  const duplicates: IndexDuplicate[] = [
+    ...current.duplicates,
+    ...[...dropped].map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
+  ]
+  const index: IndexFile = {
+    version: INDEX_VERSION,
+    generatedAt: new Date().toISOString(),
+    lastId: plan.lastId,
+    images,
+    duplicates,
+  }
   await writeIndexFile(await ensureDirectory(bank, 'app-data'), JSON.stringify(index, null, 2))
   await journal.remove()
   session = null
-  return { processed: work.length, total: images.length }
+  return {
+    processed: work.length,
+    total: images.length,
+    duplicates: [...dropped].map(([image, kept]) => ({ path: image.path, sameAs: kept.path })),
+  }
 }
 
 async function handle(message: ToWorker) {

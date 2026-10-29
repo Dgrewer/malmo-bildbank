@@ -28,6 +28,8 @@ const PHASE_TEXT: Record<Phase, string> = {
   save: 'Sparar index',
 }
 
+const DUPLICATES_TITLE = 'Dubbletter med samma namn och tagningstid, togs inte med'
+
 const count = (n: number) => n.toLocaleString('sv-SE')
 
 function errorText(error: unknown): string {
@@ -229,10 +231,17 @@ export function AdminView({ bank, onClose }: Props) {
       )}
 
       {state.kind === 'done' && (
-        <p className="import-result" role="status">
-          Importen är klar. {count(state.result.processed)} bilder importerades eller uppdaterades. Bildbanken har{' '}
-          {count(state.result.total)} bilder.
-        </p>
+        <section className="import-result">
+          <p role="status">
+            Importen är klar. {count(state.result.processed)} bilder importerades eller uppdaterades. Bildbanken har{' '}
+            {count(state.result.total)} bilder.
+          </p>
+          <PathList
+            title={DUPLICATES_TITLE}
+            items={state.result.duplicates}
+            render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
+          />
+        </section>
       )}
     </main>
   )
@@ -278,6 +287,11 @@ function Preview({ summary, onImport, onRescan }: { summary: ScanSummary; onImpo
         title="Dubbletter med exakt samma innehåll, importeras inte"
         items={summary.exactDuplicates}
         render={(item: { path: string; sameAs: string }) => `${item.path} (samma som ${item.sameAs})`}
+      />
+      <PathList
+        title={DUPLICATES_TITLE}
+        items={summary.nameDuplicates}
+        render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
       />
       <PathList title="Inte bilder eller video, hoppas över" items={summary.skipped} />
       <div className="actions">
