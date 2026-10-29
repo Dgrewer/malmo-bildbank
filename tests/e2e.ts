@@ -281,6 +281,61 @@ async function readPreview(page: Page) {
   })
 }
 
+// Kontrollerar att en bildbank i OPFS är hel: index.json och index.prev.json är
+// giltiga om de finns, index.tmp.json finns inte, och varje bild i indexet och
+// i en pågående import har miniatyr och förhandsbild (utom de med previewProblem).
+async function bankProblems(page: Page, bank: string) {
+  return page.evaluate(async (bank) => {
+    const problems: string[] = []
+    const appData = await (await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)).getDirectoryHandle('app-data')
+    const text = async (directory: FileSystemDirectoryHandle, name: string) => {
+      try {
+        return await (await (await directory.getFileHandle(name)).getFile()).text()
+      } catch {
+        return null
+      }
+    }
+    const names = async (folder: string) => {
+      const result = new Set<string>()
+      for await (const name of (await appData.getDirectoryHandle(folder, { create: true })).keys()) result.add(name)
+      return result
+    }
+    const [thumbs, previews] = [await names('thumbs'), await names('previews')]
+    type Record = { id: string; previewProblem: string | null }
+    const checkImages = (records: Record[], source: string) => {
+      for (const record of records) {
+        if (record.previewProblem) continue
+        if (!thumbs.has(`${record.id}.webp`)) problems.push(`${source}: ${record.id} saknar miniatyr`)
+        if (!previews.has(`${record.id}.webp`)) problems.push(`${source}: ${record.id} saknar förhandsbild`)
+      }
+    }
+    const parse = (value: string | null, name: string): { images: Record[] } | null => {
+      if (value === null) return null
+      try {
+        const parsed = JSON.parse(value)
+        if (Array.isArray(parsed.images)) return parsed
+      } catch {
+        // Rapporteras nedan.
+      }
+      problems.push(`${name} är inte ett giltigt index`)
+      return null
+    }
+    const index = parse(await text(appData, 'index.json'), 'index.json')
+    parse(await text(appData, 'index.prev.json'), 'index.prev.json')
+    if ((await text(appData, 'index.tmp.json')) !== null) problems.push('index.tmp.json ligger kvar')
+    if (index) checkImages(index.images, 'index.json')
+    let journal: Record[] = []
+    try {
+      const log = await text(await appData.getDirectoryHandle('import'), 'pagaende.jsonl')
+      journal = (log ?? '').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    } catch {
+      // Ingen pågående import.
+    }
+    checkImages(journal, 'pagaende.jsonl')
+    return { problems, index: !!index, journal: journal.length }
+  }, bank)
+}
+
 // En TIFF på 300×200 med röd vänsterhalva och blå högerhalva, som base64.
 function tiffFixture(orientation: number): string {
   const [width, height] = [300, 200]
@@ -858,13 +913,39 @@ try {
   let firstIndex: IndexFile | null = null
   let firstIndexText = ''
 
+  await test('4.1 en import som avbryts mitt i lämnar mappen hel och kan fortsätta', async () => {
+    const page = importPage!
+    const started = Date.now()
+    await clickButton(page, 'Starta import')
+    // Vänta tills minst 20 bilder är klara, och avbryt sedan.
+    await page.waitForFunction(
+      () => {
+        const match = document.querySelector('.import-progress p')?.textContent?.match(/Importerar – (\d+) av/)
+        return match && Number(match[1]) >= 20
+      },
+      { timeout: 300_000, polling: 100 },
+    )
+    await clickButton(page, 'Avbryt')
+    await waitForText(page, 'Importen avbröts efter', 60_000)
+    const afterAbort = await bankProblems(page, bank)
+    assert(!afterAbort.problems.length, afterAbort.problems.slice(0, 5).join('\n      '))
+    assert(afterAbort.journal >= 20, `Bara ${afterAbort.journal} bilder sparades i pagaende.jsonl`)
+    assert(!afterAbort.index, 'index.json skrevs fast importen avbröts')
+
+    await clickButton(page, 'Fortsätt')
+    await waitForPreview(page)
+    await waitForText(page, 'bilder blev klara i en avbruten import')
+    await clickButton(page, 'Fortsätt importen')
+    // Första importen skapar miniatyrer och förhandsbilder för alla bilder.
+    await waitForText(page, 'Importen är klar', 900_000)
+    console.log(`      Första importen tog ${Math.round((Date.now() - started) / 1000)} s, med avbrott`)
+    const done = await bankProblems(page, bank)
+    assert(!done.problems.length, done.problems.slice(0, 5).join('\n      '))
+    assert(done.index && done.journal === 0, 'Indexet saknas eller pagaende.jsonl ligger kvar')
+  })
+
   await test('4.1 importen skriver index med id och fingeravtryck', async () => {
     const page = importPage!
-    await clickButton(page, 'Starta import')
-    // Första importen skapar miniatyrer och förhandsbilder för alla bilder.
-    const started = Date.now()
-    await waitForText(page, 'Importen är klar', 900_000)
-    console.log(`      Första importen tog ${Math.round((Date.now() - started) / 1000)} s`)
     firstIndexText = (await readOpfs(page, `${bank}/app-data/index.json`))!
     firstIndex = JSON.parse(firstIndexText) as IndexFile
     const ids = firstIndex.images.map((image) => image.id)
@@ -1104,8 +1185,18 @@ try {
         const record = { id, path, hash: await quickHash(file), fileSize: file.size, fileModified: file.lastModified, description: 'Klar före avbrottet', alternates: [], previewProblem: null }
         const imports = await (await opfs.getDirectoryHandle(bank)).getDirectoryHandle('app-data').then((d) => d.getDirectoryHandle('import', { create: true }))
         const writable = await (await imports.getFileHandle('pagaende.jsonl', { create: true })).createWritable()
-        await writable.write(JSON.stringify(record) + '\n{"trasig')
+        // En post från en import med en annan originalmapp, och en rad som inte skrevs klart.
+        const foreign = { ...record, id: 'MB-999999', path: 'original/Annan mapp/finns-inte.jpg', hash: 'q1-annan' }
+        await writable.write(JSON.stringify(record) + '\n' + JSON.stringify(foreign) + '\n{"trasig')
         await writable.close()
+        // Som om sparandet av indexet också avbröts: en halvskriven index.tmp.json
+        // och en tom index.prev.json.
+        const app = await (await opfs.getDirectoryHandle(bank)).getDirectoryHandle('app-data')
+        for (const [name, content] of [['index.tmp.json', '{"version":1,"ima'], ['index.prev.json', '']]) {
+          const file = await (await app.getFileHandle(name, { create: true })).createWritable()
+          await file.write(content)
+          await file.close()
+        }
         // Miniatyr och förhandsbild blev också klara före avbrottet.
         const appData = await (await opfs.getDirectoryHandle(bank)).getDirectoryHandle('app-data')
         for (const folder of ['thumbs', 'previews']) {
@@ -1125,8 +1216,27 @@ try {
     const { counts } = await waitForPreview(page)
     await waitForText(page, '1 bilder blev klara i en avbruten import')
     assert(counts.new === 0, `Den redan klara bilden räknas som ny: ${JSON.stringify(counts)}`)
+    assert(counts.removed === 0, `Posten från en annan mapp räknas som borttagen: ${JSON.stringify(counts)}`)
+    // Uppstädningen visas.
+    for (const note of [
+      'Den halvfärdiga index.tmp.json togs bort.',
+      'index.prev.json var tom eller trasig och togs bort.',
+      '1 rader i den avbrutna importens logg var ofullständiga.',
+      '1 bilder i den avbrutna importen finns inte i den här originalmappen.',
+    ]) {
+      await waitForText(page, note, 5_000)
+    }
+    await screenshot(page, '4.1-uppstadning')
+    const cleaned = await bankProblems(page, bank)
+    assert(!cleaned.problems.length, cleaned.problems.join('\n      '))
     await clickButton(page, 'Fortsätt importen')
     await waitForText(page, 'Importen är klar', 120_000)
+    const after = await bankProblems(page, bank)
+    assert(!after.problems.length && after.journal === 0, after.problems.join('\n      '))
+    assert(
+      JSON.parse((await readOpfs(page, `${bank}/app-data/index.prev.json`))!).images.length > 0,
+      'index.prev.json är inte ett helt index',
+    )
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
     const record = index.images.find((image) => image.path === path)
     assert(record?.id === id && record.description === 'Klar före avbrottet', 'Bilden från den avbrutna importen gjordes om')

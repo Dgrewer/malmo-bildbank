@@ -25,6 +25,8 @@ export interface ScanSummary {
   skipped: string[]
   // Bilder som redan blev klara i en avbruten import.
   resumed: number
+  // Vad som städades upp eller ska göras om efter en tidigare import som avbröts.
+  recovery: string[]
 }
 
 export interface ImportResult {

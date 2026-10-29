@@ -3,15 +3,17 @@ import { INDEX_VERSION, type ImageRecord, type IndexFile } from './types.ts'
 
 export class IndexError extends Error {}
 
-// Läser app-data/index.json, eller null om bildbanken inte har indexerats än.
-export async function readIndexFile(root: FileSystemDirectoryHandle): Promise<IndexFile | null> {
-  const file = await readFile(root, 'app-data/index.json')
-  if (!file) return null
+// Tolkar innehållet i en indexfil. Kastar IndexError om det inte är ett
+// giltigt index, t.ex. en tom eller halvskriven fil.
+export function parseIndex(text: string, name = 'app-data/index.json'): IndexFile {
   let index: IndexFile
   try {
-    index = JSON.parse(await file.text())
+    index = JSON.parse(text)
   } catch (error) {
-    throw new IndexError(`app-data/index.json går inte att läsa: ${error instanceof Error ? error.message : error}`)
+    throw new IndexError(`${name} går inte att läsa: ${error instanceof Error ? error.message : error}`)
+  }
+  if (!index || typeof index !== 'object' || !Array.isArray(index.images)) {
+    throw new IndexError(`${name} är inte ett index.`)
   }
   if (index.version !== INDEX_VERSION) {
     throw new IndexError(
@@ -31,6 +33,21 @@ export async function readIndexFile(root: FileSystemDirectoryHandle): Promise<In
       fileModified: image.fileModified ?? null,
     })),
   }
+}
+
+export function isValidIndex(text: string): boolean {
+  try {
+    parseIndex(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Läser app-data/index.json, eller null om bildbanken inte har indexerats än.
+export async function readIndexFile(root: FileSystemDirectoryHandle): Promise<IndexFile | null> {
+  const file = await readFile(root, 'app-data/index.json')
+  return file ? parseIndex(await file.text()) : null
 }
 
 export async function loadIndex(root: FileSystemDirectoryHandle): Promise<ImageRecord[]> {

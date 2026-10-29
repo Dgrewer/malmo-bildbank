@@ -9,7 +9,7 @@ import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
 import { idNumber, INDEX_VERSION, type IndexDuplicate, type ImageRecord, type IndexFile } from '../catalog/types.ts'
-import { ensureDirectory, findDirectory, readFile, removeFile, writeFile, writeIndexFile } from '../fs/folder.ts'
+import { ensureDirectory, findDirectory, readFile, removeFile, writeFile } from '../fs/folder.ts'
 import { combinedHash, quickHash } from './hash.ts'
 import {
   decodeImage,
@@ -20,6 +20,7 @@ import {
   VIDEO_UNREADABLE,
   type Decoded,
 } from './images.ts'
+import { recoverIndexFiles, writeIndexFile } from './indexFiles.ts'
 import { Journal, readJournal } from './journal.ts'
 import { readMetadata } from './metadata.ts'
 import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
@@ -45,6 +46,9 @@ interface Session {
   resumed: Map<string, ImageRecord>
   // Dubbletter med samma namn och tagningstid som tidigare importer har valt bort.
   duplicates: IndexDuplicate[]
+  // Id:n från en avbruten import som inte hör till den här originalmappen.
+  // Deras miniatyrer tas bort när indexet är sparat, om id:t inte har delats ut igen.
+  foreign: Set<string>
 }
 
 const scope = self as unknown as {
@@ -128,9 +132,14 @@ async function movedDuplicateIds(bank: FileSystemDirectoryHandle): Promise<numbe
 }
 
 async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirectoryHandle): Promise<ScanSummary> {
+  // Först städas det som en avbruten import kan ha lämnat efter sig.
+  const recovery = await recoverIndexFiles(bank)
   const index = await readIndexFile(bank)
   const journal = await readJournal(bank)
-  const resumed = new Map(journal.map((record) => [record.id, record]))
+  const resumed = new Map(journal.records.map((record) => [record.id, record]))
+  if (journal.broken) {
+    recovery.push(`${journal.broken} rader i den avbrutna importens logg var ofullständiga. De bilderna görs om.`)
+  }
   // Bilder som blev klara i en avbruten import räknas som redan importerade.
   const previous = [
     ...(index?.images ?? []).filter((record) => !resumed.has(record.id)),
@@ -166,23 +175,46 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
   const duplicates = (index?.duplicates ?? []).filter((duplicate) => alive.has(duplicate.keptId) && found.has(duplicate.hash))
   const skippedHashes = new Set(duplicates.map((duplicate) => duplicate.hash))
 
+  const files = hashed.filter((file) => !skippedHashes.has(file.hash))
+  const indexed = new Set((index?.images ?? []).map((record) => record.id))
+  // Bilder i en avbruten import som inte finns i originalmappen, t.ex. för att
+  // importen gjordes från en annan mapp, har aldrig varit i indexet. De kastas
+  // i stället för att räknas som borttagna, och deras id kan delas ut igen
+  // eftersom ingen har kunnat tagga dem.
+  const foreign = new Set(
+    buildPlan(files, previous, lastId)
+      .removed.filter((record) => !indexed.has(record.id))
+      .map((record) => record.id),
+  )
+  for (const id of foreign) resumed.delete(id)
   const plan = buildPlan(
-    hashed.filter((file) => !skippedHashes.has(file.hash)),
-    previous,
+    files,
+    previous.filter((record) => !foreign.has(record.id)),
     lastId,
   )
+  if (foreign.size) {
+    recovery.push(
+      `${foreign.size} bilder i den avbrutna importen finns inte i den här originalmappen. De togs inte med.`,
+    )
+  }
   // En bild vars miniatyr eller förhandsbild saknas görs om, t.ex. efter en
   // import som avbröts eller om någon har tagit bort filerna.
   const thumbs = await ensureDirectory(bank, 'app-data/thumbs')
   const previews = await ensureDirectory(bank, 'app-data/previews')
   const [thumbNames, previewNames] = [await names(thumbs), await names(previews)]
+  let redone = 0
   for (const item of plan.items) {
     const name = `${item.id}.webp`
     const missing = !(thumbNames.has(name) && previewNames.has(name))
-    if (item.change === 'unchanged' && !item.previous?.previewProblem && missing) item.change = 'changed'
+    if (item.change === 'unchanged' && !item.previous?.previewProblem && missing) {
+      item.change = 'changed'
+      redone++
+    }
   }
-  const indexed = new Set((index?.images ?? []).map((record) => record.id))
-  session = { bank, originals, indexed, thumbs, previews, plan, journal: new Journal(bank, journal), resumed, duplicates }
+  if (redone) recovery.push(`${redone} bilder saknade miniatyr eller förhandsbild. De görs om.`)
+  const pending = new Journal(bank, journal.records)
+  pending.drop(foreign)
+  session = { bank, originals, indexed, thumbs, previews, plan, journal: pending, resumed, duplicates, foreign }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -194,7 +226,8 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     exactDuplicates: plan.exactDuplicates,
     nameDuplicates: duplicates.map((duplicate) => ({ path: duplicate.path, sameAs: alive.get(duplicate.keptId)!.path })),
     skipped: scanned.skipped,
-    resumed: plan.items.filter((item) => resumed.has(item.id)).length,
+    resumed: plan.items.filter((item) => resumed.has(item.id) && item.change === 'unchanged').length,
+    recovery,
   }
 }
 
@@ -267,7 +300,7 @@ async function withImages(current: Session, record: ImageRecord, decode: () => P
     }
     return { ...record, width: decoded.width, height: decoded.height, previewProblem: null }
   } catch (error) {
-    await removeImages(current, record.id)
+    // Eventuella gamla bildfiler tas bort först när det nya indexet är sparat.
     const problem =
       error instanceof PreviewProblem
         ? error.message
@@ -356,9 +389,10 @@ async function runImport(current: Session, copy: boolean) {
   // bort först när det nya indexet är sparat, så att inget försvinner om
   // skrivningen misslyckas.
   const kept = new Set(images.map((image) => image.id))
-  for (const record of [...plan.removed, ...dropped.keys()]) {
-    if (!kept.has(record.id)) await removeImages(current, record.id)
+  for (const id of [...plan.removed, ...dropped.keys()].map((record) => record.id).concat([...current.foreign])) {
+    if (!kept.has(id)) await removeImages(current, id)
   }
+  for (const image of images) if (image.previewProblem) await removeImages(current, image.id)
   session = null
   return {
     processed: work.length,

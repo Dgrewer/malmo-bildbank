@@ -101,6 +101,14 @@ Importen körs i appen, under Importera. Originalmappen väljs per dator, och ka
 - Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.
 - Indexet skrivs först till `index.tmp.json`. Sedan sparas den nuvarande filen som `index.prev.json`, och den nya filen byter namn till `index.json`. För att gå tillbaka en version: byt namn på `index.prev.json` till `index.json`.
+- Ordningen är alltid: miniatyrer och förhandsbilder först, sedan indexet, sist borttagning av bildfiler som det nya indexet inte längre pekar på. Ett index pekar därför aldrig på bildfiler som saknas, även om importen avbryts.
+- `index.prev.json` skrivs bara över med ett giltigt index, aldrig med en tom eller trasig fil.
+- När en import startar städas det som en avbruten import har lämnat kvar, och det som gjordes visas i förhandsvisningen:
+  - `index.tmp.json` tas bort. Är `index.json` trasig men `index.tmp.json` hel används den i stället, och annars `index.prev.json`.
+  - En tom eller trasig `index.prev.json` tas bort.
+  - Rader i `pagaende.jsonl` som inte skrevs klart hoppas över, och de bilderna görs om.
+  - Poster i `pagaende.jsonl` för filer som inte finns i den valda originalmappen kastas. Deras id har aldrig funnits i indexet och kan delas ut igen.
+  - Bilder i indexet som saknar miniatyr eller förhandsbild görs om.
 - Systemfiler (`desktop.ini`, `Thumbs.db`, `.DS_Store`, Macens `__MACOSX` och `._`-filer) hoppas över utan att visas.
 
 ## Hur testdata skapas

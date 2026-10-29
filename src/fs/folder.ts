@@ -24,7 +24,7 @@ export async function findDirectory(
   return null
 }
 
-async function findFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle | null> {
+export async function findFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle | null> {
   try {
     return await parent.getFileHandle(name)
   } catch (error) {
@@ -61,13 +61,19 @@ export async function ensureDirectory(root: FileSystemDirectoryHandle, path: str
 
 // createWritable skriver till en temporär fil och byter ut originalet först
 // när skrivningen är klar, så en avbruten skrivning lämnar den gamla filen orörd.
+// getFileHandle skapar dock en tom fil direkt. Fanns filen inte innan och
+// skrivningen misslyckas tas den tomma filen bort igen.
 export async function writeFile(directory: FileSystemDirectoryHandle, name: string, data: Blob | string) {
-  const writable = await (await directory.getFileHandle(name, { create: true })).createWritable()
+  const existed = (await findFile(directory, name)) !== null
+  const handle = await directory.getFileHandle(name, { create: true })
+  let writable: FileSystemWritableFileStream | null = null
   try {
+    writable = await handle.createWritable()
     await writable.write(data)
     await writable.close()
   } catch (error) {
-    await writable.abort().catch(() => {})
+    await writable?.abort().catch(() => {})
+    if (!existed) await removeFile(directory, name).catch(() => {})
     throw error
   }
 }
@@ -76,26 +82,6 @@ export async function removeFile(directory: FileSystemDirectoryHandle, name: str
   await directory.removeEntry(name).catch((error) => {
     if (!isNotFound(error)) throw error
   })
-}
-
-// Skriver index.json säkert: först till index.tmp.json, sedan sparas den
-// nuvarande versionen som index.prev.json och den nya filen byter namn till
-// index.json. Går något fel finns alltid en hel version kvar.
-export async function writeIndexFile(appData: FileSystemDirectoryHandle, text: string) {
-  await writeFile(appData, 'index.tmp.json', text)
-  // Den nuvarande versionen läses in som text först. En tom eller oläslig fil
-  // får aldrig ersätta en tidigare index.prev.json.
-  const current = await findFile(appData, 'index.json')
-  const previous = current ? await (await current.getFile()).text() : ''
-  if (previous) await writeFile(appData, 'index.prev.json', previous)
-  try {
-    await (await appData.getFileHandle('index.tmp.json')).move('index.json')
-  } catch {
-    // Mappar på disken (inte webbläsarens egna) kan sakna namnbyte. Då skrivs
-    // index.json direkt. createWritable byter ändå ut filen först när allt är skrivet.
-    await writeFile(appData, 'index.json', text)
-    await removeFile(appData, 'index.tmp.json')
-  }
 }
 
 const REQUIRED_DIRECTORIES = ['original', 'app-data']

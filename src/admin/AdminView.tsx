@@ -313,6 +313,16 @@ function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
   return (
     <section className="import-preview">
       <h3>Det här händer vid importen</h3>
+      {summary.recovery.length > 0 && (
+        <div className="note recovery" role="status">
+          <p>Förra importen avslutades inte ordentligt. Det här har åtgärdats:</p>
+          <ul>
+            {summary.recovery.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {summary.resumed > 0 && (
         <p className="note">
           {count(summary.resumed)} bilder blev klara i en avbruten import och behöver inte göras om.

@@ -459,3 +459,11 @@ button:disabled {
   gap: 0.5rem;
   font-weight: 600;
 }
+
+.recovery p {
+  margin: 0;
+}
+
+.recovery ul {
+  margin: 0.25rem 0 0;
+}
