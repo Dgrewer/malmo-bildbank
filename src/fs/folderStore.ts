@@ -1,9 +1,11 @@
-// Sparar den valda mappen i IndexedDB så att den kan återanslutas vid nästa
-// start. Handtaget gäller bara i den här webbläsaren på den här datorn.
+// Sparar valda mappar i IndexedDB så att de kan återanslutas vid nästa start.
+// Handtagen gäller bara i den här webbläsaren på den här datorn.
 
 const DB_NAME = 'malmo-bildbank'
 const STORE = 'settings'
 const FOLDER_KEY = 'folder'
+// Originalmappen som importen läser från, t.ex. på G:.
+const ORIGINALS_KEY = 'originals'
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -27,11 +29,16 @@ async function run<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) 
   }
 }
 
-export async function loadFolder(): Promise<FileSystemDirectoryHandle | null> {
-  const handle = await run('readonly', (store) => store.get(FOLDER_KEY))
+async function load(key: string): Promise<FileSystemDirectoryHandle | null> {
+  const handle = await run('readonly', (store) => store.get(key))
   return handle instanceof FileSystemDirectoryHandle ? handle : null
 }
 
-export async function saveFolder(handle: FileSystemDirectoryHandle): Promise<void> {
-  await run('readwrite', (store) => store.put(handle, FOLDER_KEY))
+async function save(key: string, handle: FileSystemDirectoryHandle): Promise<void> {
+  await run('readwrite', (store) => store.put(handle, key))
 }
+
+export const loadFolder = () => load(FOLDER_KEY)
+export const saveFolder = (handle: FileSystemDirectoryHandle) => save(FOLDER_KEY, handle)
+export const loadOriginalsFolder = () => load(ORIGINALS_KEY)
+export const saveOriginalsFolder = (handle: FileSystemDirectoryHandle) => save(ORIGINALS_KEY, handle)

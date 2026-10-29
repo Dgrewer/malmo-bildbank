@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import { AdminView } from './admin/AdminView.tsx'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
-import { findDirectory } from './fs/folder.ts'
+import { ensureDirectory } from './fs/folder.ts'
 import { DetailView } from './detail/DetailView.tsx'
 import { Gallery } from './gallery/Gallery.tsx'
 
@@ -13,22 +14,15 @@ interface Catalog {
 
 type State = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; catalog: Catalog }
 
-async function openDirectory(parent: FileSystemDirectoryHandle, name: string, path: string) {
-  const directory = await findDirectory(parent, name)
-  if (!directory) throw new Error(`Hittar inte mappen ${path}.`)
-  return directory
-}
-
 async function loadCatalog(root: FileSystemDirectoryHandle): Promise<Catalog> {
   let images = await loadIndex(root)
   // Testkroken kan upprepa testposterna, t.ex. till 3 000 (?testdata&repeat=3000).
   const repeat = import.meta.env.DEV ? window.__bildbankTestRepeat : undefined
   if (repeat && images.length) images = Array.from({ length: repeat }, (_, n) => images[n % images.length])
-  const appData = await openDirectory(root, 'app-data', 'app-data')
   return {
     images,
-    thumbs: await openDirectory(appData, 'thumbs', 'app-data/thumbs'),
-    previews: await openDirectory(appData, 'previews', 'app-data/previews'),
+    thumbs: await ensureDirectory(root, 'app-data/thumbs'),
+    previews: await ensureDirectory(root, 'app-data/previews'),
   }
 }
 
@@ -40,6 +34,9 @@ interface Props {
 export function Library({ root, onChangeFolder }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' })
   const [selected, setSelected] = useState<number | null>(null)
+  const [admin, setAdmin] = useState(false)
+  // Räknas upp när importen har ändrat indexet, så att katalogen läses om.
+  const [version, setVersion] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -52,7 +49,7 @@ export function Library({ root, onChangeFolder }: Props) {
     return () => {
       cancelled = true
     }
-  }, [root])
+  }, [root, version])
 
   return (
     <div className="app">
@@ -62,17 +59,31 @@ export function Library({ root, onChangeFolder }: Props) {
           {root.name}
           {state.kind === 'ready' && ` · ${state.catalog.images.length.toLocaleString('sv-SE')} bilder`}
         </span>
-        <button type="button" onClick={onChangeFolder}>
+        {!admin && (
+          <button type="button" onClick={() => setAdmin(true)}>
+            Importera
+          </button>
+        )}
+        <button type="button" disabled={admin} onClick={onChangeFolder}>
           Byt mapp
         </button>
       </header>
-      {state.kind === 'loading' && <p className="status">Läser bildbanken…</p>}
-      {state.kind === 'error' && (
+      {admin && (
+        <AdminView
+          bank={root}
+          onClose={(changed) => {
+            setAdmin(false)
+            if (changed) setVersion((n) => n + 1)
+          }}
+        />
+      )}
+      {!admin && state.kind === 'loading' && <p className="status">Läser bildbanken…</p>}
+      {!admin && state.kind === 'error' && (
         <p className="error status" role="alert">
           {state.message}
         </p>
       )}
-      {state.kind === 'ready' && (
+      {!admin && state.kind === 'ready' && (
         <Gallery images={state.catalog.images} thumbs={state.catalog.thumbs} onOpen={setSelected} />
       )}
       {state.kind === 'ready' && selected !== null && (

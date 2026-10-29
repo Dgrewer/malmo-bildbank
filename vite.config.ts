@@ -67,10 +67,13 @@ function testdataServer(): Plugin {
             res.setHeader('Content-Type', 'application/json')
             res.end(
               JSON.stringify(
-                entries.map((entry) => ({
-                  name: entry.name,
-                  kind: entry.isDirectory() ? 'directory' : 'file',
-                })),
+                await Promise.all(
+                  entries.map(async (entry) => ({
+                    name: entry.name,
+                    kind: entry.isDirectory() ? 'directory' : 'file',
+                    size: entry.isDirectory() ? undefined : (await fs.stat(path.join(target, entry.name))).size,
+                  })),
+                ),
               ),
             )
           } else if (url.pathname === '/file') {

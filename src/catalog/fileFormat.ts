@@ -3,6 +3,29 @@
 export const RAW_EXTENSIONS = new Set(['cr2', 'cr3', 'nef', 'arw', 'dng'])
 export const HEIC_EXTENSIONS = new Set(['heic', 'heif'])
 export const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'm4v'])
+export const TIFF_EXTENSIONS = new Set(['tif', 'tiff'])
+// Format som webbläsaren själv kan avkoda.
+export const BROWSER_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'jfif', 'png', 'webp', 'avif', 'gif'])
+// JPG föredras som förhandsbild till en RAW-fil, i den här ordningen.
+export const RAW_COMPANIONS = ['jpg', 'jpeg', 'jfif', 'tif', 'tiff', 'png', 'heic', 'heif']
+// Systemfiler hoppas över utan att nämnas. __MACOSX och filer som börjar med
+// ._ skapas av Mac, t.ex. när en zip-fil packas upp, och är inga bilder.
+const SYSTEM_FILES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
+
+export function isSystemFile(name: string): boolean {
+  return SYSTEM_FILES.has(name.toLowerCase()) || name.startsWith('._')
+}
+
+export function isSystemDirectory(name: string): boolean {
+  return name === '__MACOSX' || name.startsWith('.')
+}
+
+export function isSupported(path: string): boolean {
+  const ext = extension(path)
+  return [BROWSER_IMAGE_EXTENSIONS, TIFF_EXTENSIONS, HEIC_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS].some(
+    (set) => set.has(ext),
+  )
+}
 
 const NAMES: Record<string, string> = {
   jpg: 'JPG',

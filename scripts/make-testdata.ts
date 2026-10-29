@@ -407,6 +407,9 @@ async function makeRecord(source: Source, id: string, n: number): Promise<ImageR
     alternates: source.alternates.map((alternate) => alternate.path),
     durationSeconds: video?.durationSeconds ?? null,
     previewProblem: null,
+    hash: null,
+    fileSize: null,
+    fileModified: null,
   }
 }
 
@@ -432,6 +435,9 @@ async function problemRecord(source: Source, id: string, n: number, error: unkno
       error instanceof PreviewProblem
         ? error.message
         : `Förhandsbilden kunde inte skapas: ${error instanceof Error ? error.message : error}`,
+    hash: null,
+    fileSize: null,
+    fileModified: null,
   }
 }
 

@@ -5,6 +5,8 @@ Appen läser hela bildbanken från `app-data/index.json`. Miniatyrer och förhan
 ```
 app-data/
   index.json
+  index.prev.json            föregående version, sparas vid varje import
+  import/pagaende.jsonl      pågående import, finns bara medan en import pågår eller är avbruten
   thumbs/MB-000001.webp      miniatyr, längsta sidan högst 400 px
   previews/MB-000001.webp    förhandsbild, längsta sidan högst 1600 px
 ```
@@ -17,6 +19,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 {
   "version": 1,
   "generatedAt": "2026-10-29T14:30:00.000Z",
+  "lastId": 40,
   "images": [ ... ]
 }
 ```
@@ -25,7 +28,8 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 |---|---|---|
 | `version` | `1` | Formatversion. Höjs när formatet ändras på ett sätt som äldre appversioner inte klarar. |
 | `generatedAt` | sträng | När indexet skapades, ISO 8601 i UTC. |
-| `images` | lista | En post per bild, sorterad efter `path`. |
+| `lastId` | heltal | Högsta id-numret som någonsin har delats ut. Nya bilder får nästa nummer, så ett id återanvänds aldrig, inte ens när bilden har tagits bort. Saknas i äldre index, och räknas då från bildernas och de flyttade dubbletternas id. |
+| `images` | lista | En post per bild, sorterad efter id. |
 
 ## En post
 
@@ -46,7 +50,10 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
   "description": "En delegation från Hong Kong gick igår stadsvandring i Malmö",
   "alternates": [],
   "durationSeconds": null,
-  "previewProblem": null
+  "previewProblem": null,
+  "hash": "q1-3f0c…",
+  "fileSize": 2401554,
+  "fileModified": 1767225600000
 }
 ```
 
@@ -65,13 +72,27 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `tags` | lista med strängar | Nyckelord. Inga dubbletter. |
 | `description` | sträng | Bildtext. Tom sträng om den saknas. Radbrytningar är `\n`. |
 | `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
-
 | `durationSeconds` | tal eller `null` | Längd i sekunder för video, `null` för bilder. För video är `width` och `height` filmens bildstorlek och `takenAt` inspelningstiden. Appen läser äldre index utan fältet som `null`. |
 | `previewProblem` | sträng eller `null` | Varför miniatyr och förhandsbild saknas, skrivet för den som ska åtgärda det. `null` när de finns. Då är `width` och `height` 0, och appen visar en !-ikon med förklaringen. Appen läser äldre index utan fältet som `null`. |
+| `hash` | sträng eller `null` | Snabbt fingeravtryck av originalet: `q1-` och SHA-256 i hex av filens storlek (8 byte, big-endian) följd av filens första och sista 4 MB, eller hela filen om den är högst 8 MB. För ett RAW-par är det SHA-256 av de två filernas fingeravtryck, åtskilda av radbrytning. Används för att känna igen flyttade och omdöpta filer. `null` i index från före importen i appen. |
+| `fileSize`, `fileModified` | heltal eller `null` | Originalets storlek i byte och ändringstid i millisekunder sedan 1970. Är båda oförändrade återanvänds `hash` utan att filen läses. |
 
 `path` och `alternates` kan ha vilken filändelse som helst: jpg, png, tif, heic, cr2, nef osv. Appen visar formatet utifrån filändelsen och läser aldrig originalen för att visa dem, bara miniatyrerna och förhandsbilderna.
 
 Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade datum är `null`.
+
+## Import
+
+Importen körs i appen, under Importera. Originalmappen väljs per dator, och kan ligga utanför bildbanken, t.ex. på G:. Varje mapp direkt under originalmappen är en fotograf, och under den kan bilder ligga i undermappar i flera nivåer. `path` räknas alltid från originalmappen och börjar med `original/`.
+
+- Bilder känns igen på `hash`, så en flyttad eller omdöpt fil behåller sitt id. Finns inget fingeravtryck med samma värde matchas filen på `path`.
+- Nya bilder får `lastId + 1` och framåt. Befintliga id ändras aldrig.
+- Filer med exakt samma innehåll importeras en gång. Importen flyttar och ändrar aldrig något i originalmappen.
+- Bilder vars fil inte finns kvar tas bort ur indexet. Deras id delas inte ut igen.
+- Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
+- Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.
+- Indexet skrivs först till `index.tmp.json`. Sedan sparas den nuvarande filen som `index.prev.json`, och den nya filen byter namn till `index.json`. För att gå tillbaka en version: byt namn på `index.prev.json` till `index.json`.
+- Systemfiler (`desktop.ini`, `Thumbs.db`, `.DS_Store`, Macens `__MACOSX` och `._`-filer) hoppas över utan att visas.
 
 ## Hur testdata skapas
 

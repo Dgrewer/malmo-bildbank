@@ -9,14 +9,26 @@
 // Testet underkänns om sidan gör ett enda anrop utanför localhost, om CSP:n
 // blockerar något eller om sidan kastar ett fel.
 
-import { existsSync } from 'node:fs'
+import { existsSync, openAsBlob } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
 import { findDuplicates } from '../src/catalog/duplicates.ts'
-import { fileFormat, fileName, formatDuration, isVideo } from '../src/catalog/fileFormat.ts'
+import {
+  extension,
+  fileFormat,
+  fileName,
+  formatDuration,
+  isSupported,
+  isSystemDirectory,
+  isSystemFile,
+  isVideo,
+  RAW_COMPANIONS,
+  RAW_EXTENSIONS,
+} from '../src/catalog/fileFormat.ts'
+import { combinedHash, quickHash } from '../src/import/hash.ts'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
@@ -179,6 +191,136 @@ async function waitForThumbnails(page: Page) {
   )
 }
 
+// Går igenom originalmappen med samma regler som importen: systemfiler hoppas
+// över, en RAW-fil och en JPG med samma namn är en bild, och filer med samma
+// innehåll räknas en gång.
+async function expectedImport(root: string) {
+  const files: string[][] = []
+  const skipped: string[] = []
+  const rawPairs: { path: string; companion: string }[] = []
+  const toIndexPath = (file: string) => 'original/' + path.relative(root, file).replaceAll('\\', '/').normalize('NFC')
+  async function walk(directory: string) {
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    const names = entries.filter((entry) => entry.isFile() && !isSystemFile(entry.name)).map((entry) => entry.name)
+    const base = (name: string) => name.slice(0, name.lastIndexOf('.')).normalize('NFC').toLowerCase()
+    const companions = new Map<string, string>()
+    for (const name of names.filter((name) => RAW_EXTENSIONS.has(extension(name)))) {
+      const companion = names
+        .filter((other) => base(other) === base(name) && RAW_COMPANIONS.includes(extension(other)))
+        .sort((a, b) => RAW_COMPANIONS.indexOf(extension(a)) - RAW_COMPANIONS.indexOf(extension(b)))[0]
+      if (!companion) continue
+      companions.set(name, companion)
+      rawPairs.push({ path: toIndexPath(path.join(directory, name)), companion: toIndexPath(path.join(directory, companion)) })
+    }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) {
+        if (!isSystemDirectory(entry.name)) await walk(full)
+      } else if (isSystemFile(entry.name) || [...companions.values()].includes(entry.name)) continue
+      else if (!isSupported(entry.name)) skipped.push(toIndexPath(full))
+      else files.push([full, ...(companions.has(entry.name) ? [path.join(directory, companions.get(entry.name)!)] : [])])
+    }
+  }
+  await walk(root)
+  const hashes = new Set<string>()
+  for (const parts of files) {
+    hashes.add(await combinedHash(await Promise.all(parts.map(async (part) => quickHash(await openAsBlob(part))))))
+  }
+  return { unique: hashes.size, duplicates: files.length - hashes.size, skipped, rawPairs }
+}
+
+async function readPreview(page: Page) {
+  return page.evaluate(() => {
+    const number = (text: string | null | undefined) => Number((text ?? '').replace(/\s/g, ''))
+    const counts = Object.fromEntries(
+      [...document.querySelectorAll<HTMLElement>('.change-counts li')].map((item) => [
+        item.dataset.change!,
+        number(item.querySelector('strong')?.textContent),
+      ]),
+    ) as Record<'new' | 'changed' | 'moved' | 'removed' | 'unchanged', number>
+    const lists = Object.fromEntries(
+      [...document.querySelectorAll('.change-list')].map((list) => [
+        list.querySelector('summary')!.textContent!.split(':')[0],
+        [...list.querySelectorAll('li')].map((item) => item.textContent!),
+      ]),
+    ) as Record<string, string[]>
+    return { counts, lists }
+  })
+}
+
+async function waitForPreview(page: Page) {
+  await page.waitForSelector('.import-preview', { timeout: 120_000 })
+  return readPreview(page)
+}
+
+// Bilderna i en fotografmapp, med en vanlig JPG som original.
+function pick(index: IndexFile, photographer: string, n = 0): ImageRecord {
+  const images = index.images.filter(
+    (image) => image.photographer === photographer && /\.jpe?g$/i.test(image.path) && !image.alternates.length,
+  )
+  assert(images.length > n, `Testdata har för få JPG-bilder i ${photographer}`)
+  return images[n]
+}
+
+// Hjälpfunktioner för filerna i OPFS. Sökvägar i indexformat (original/...)
+// pekar på testdatats mapp Original.
+async function readOpfs(page: Page, file: string): Promise<string | null> {
+  return page.evaluate(async (file) => {
+    let directory = await navigator.storage.getDirectory()
+    const parts = file.split('/')
+    const name = parts.pop()!
+    try {
+      for (const part of parts) directory = await directory.getDirectoryHandle(part)
+      return await (await (await directory.getFileHandle(name)).getFile()).text()
+    } catch {
+      return null
+    }
+  }, file)
+}
+
+type OpfsOperation = 'read' | 'write' | 'append' | 'delete'
+
+// Läser (som base64), skriver, lägger till eller tar bort en fil i en bildbank i OPFS.
+async function opfs(page: Page, bank: string, file: string, operation: OpfsOperation, ...args: string[]) {
+  return page.evaluate(
+    async (bank, file, operation, args) => {
+      const parts = ['Original', ...file.split('/').slice(1)]
+      const name = parts.pop()!
+      let directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)
+      for (const part of parts) directory = await directory.getDirectoryHandle(part, { create: true })
+      if (operation === 'delete') return void (await directory.removeEntry(name))
+      const handle = await directory.getFileHandle(name, { create: operation === 'write' })
+      if (operation === 'read') {
+        let text = ''
+        for (const byte of new Uint8Array(await (await handle.getFile()).arrayBuffer())) text += String.fromCharCode(byte)
+        return btoa(text)
+      }
+      const writable = await handle.createWritable({ keepExistingData: operation === 'append' })
+      if (operation === 'append') await writable.seek((await handle.getFile()).size)
+      else await writable.write(Uint8Array.from(atob(args[0]), (char) => char.charCodeAt(0)))
+      await writable.write(args.at(-1)!)
+      await writable.close()
+    },
+    bank,
+    file,
+    operation,
+    args,
+  )
+}
+
+const opfsDelete = (page: Page, bank: string, file: string) => opfs(page, bank, file, 'delete')
+const opfsAppend = (page: Page, bank: string, file: string, text: string) => opfs(page, bank, file, 'append', text)
+
+// Kopierar en fil. Med extra läggs text till på slutet, så att innehållet blir ett annat.
+async function opfsCopy(page: Page, bank: string, from: string, to: string, extra = '') {
+  await opfs(page, bank, to, 'write', (await opfs(page, bank, from, 'read')) as string, extra)
+}
+
+async function opfsMove(page: Page, bank: string, from: string, to: string) {
+  await opfsCopy(page, bank, from, to)
+  await opfsDelete(page, bank, from)
+}
+
 const server = await createServer({ server: { port: PORT, strictPort: true }, logLevel: 'error' })
 await server.listen()
 const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bildbank-e2e-'))
@@ -326,6 +468,9 @@ try {
     alternates: [],
     durationSeconds: null,
     previewProblem: null,
+    hash: null,
+    fileSize: null,
+    fileModified: null,
   })
 
   await test('Dubbletter: den med högst upplösning behålls', async () => {
@@ -553,6 +698,194 @@ try {
     await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
   })
   await (detailPage as Page | null)?.close()
+
+  console.log('4.1 Import')
+
+  // Vad importen borde hitta i testdata/Original, räknat här i Node.
+  const expected = await expectedImport('testdata/Original')
+  let importPage: Page | null = null
+  const bank = 'importtest'
+
+  await test('4.1 sökningen kan avbrytas och fortsätta', async () => {
+    importPage = await openPage(`/?testdata&originals&fresh&name=${bank}`)
+    const page = importPage
+    await waitForText(page, 'Hittar inte app-data/index.json', 600_000)
+    await clickButton(page, 'Importera')
+    await clickButton(page, 'Använd bildbankens original')
+    await waitForText(page, `${bank}/original`)
+    await clickButton(page, 'Sök efter ändringar')
+    await waitForText(page, 'Räknar fingeravtryck')
+    await clickButton(page, 'Avbryt')
+    await waitForText(page, 'Sökningen avbröts. Inget har ändrats.')
+    await clickButton(page, 'Fortsätt')
+    await page.waitForSelector('.import-preview', { timeout: 120_000 })
+  })
+
+  await test('4.1 förhandsvisningen visar nya filer, dubbletter och filer som hoppas över', async () => {
+    const page = importPage!
+    await screenshot(page, '4.1-forhandsvisning')
+    const { counts, lists } = await readPreview(page)
+    assert(counts.new === expected.unique, `${counts.new} nya, väntade ${expected.unique}`)
+    for (const key of ['changed', 'moved', 'removed', 'unchanged'] as const) {
+      assert(counts[key] === 0, `${counts[key]} ${key}, väntade 0`)
+    }
+    const duplicates = lists['Dubbletter med exakt samma innehåll, importeras inte'] ?? []
+    assert(
+      duplicates.length === expected.duplicates,
+      `${duplicates.length} dubbletter, väntade ${expected.duplicates}`,
+    )
+    const skipped = lists['Inte bilder eller video, hoppas över'] ?? []
+    assert(
+      JSON.stringify(skipped.sort()) === JSON.stringify(expected.skipped.sort()),
+      `Fel filer hoppas över: ${skipped.join(', ')}`,
+    )
+    const all = Object.values(lists).flat().join('\n')
+    assert(!/__MACOSX|\/\._/.test(all), 'Macens systemfiler syns i förhandsvisningen')
+    for (const raw of expected.rawPairs) {
+      assert(!(lists['Nya'] ?? []).includes(raw.companion), `${raw.companion} visas som en egen bild`)
+    }
+  })
+
+  let firstIndex: IndexFile | null = null
+  let firstIndexText = ''
+
+  await test('4.1 importen skriver index med id och fingeravtryck', async () => {
+    const page = importPage!
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    firstIndexText = (await readOpfs(page, `${bank}/app-data/index.json`))!
+    firstIndex = JSON.parse(firstIndexText) as IndexFile
+    const ids = firstIndex.images.map((image) => image.id)
+    assert(ids.length === expected.unique, `${ids.length} bilder i indexet, väntade ${expected.unique}`)
+    assert(
+      ids.every((id, n) => id === `MB-${String(n + 1).padStart(6, '0')}`),
+      'Id:n är inte MB-000001 och framåt i följd',
+    )
+    assert(firstIndex.lastId === ids.length, `lastId är ${firstIndex.lastId}`)
+    assert(firstIndex.images.every((image) => /^q1-[0-9a-f]{64}$/.test(image.hash ?? '')), 'En bild saknar fingeravtryck')
+    assert(firstIndex.images.every((image) => image.consent === 'not-required'), 'Samtycke är inte not-required')
+    for (const raw of expected.rawPairs) {
+      const record = firstIndex.images.find((image) => image.path === raw.path)
+      assert(record?.alternates.includes(raw.companion), `${raw.path} saknar ${raw.companion} i alternates`)
+    }
+    assert(!(await readOpfs(page, `${bank}/app-data/index.tmp.json`)), 'index.tmp.json ligger kvar')
+    assert(!(await readOpfs(page, `${bank}/app-data/import/pagaende.jsonl`)), 'pagaende.jsonl ligger kvar')
+
+    await clickButton(page, 'Sök efter ändringar')
+    const { counts } = await waitForPreview(page)
+    assert(counts.unchanged === expected.unique && counts.new === 0, `Andra sökningen: ${JSON.stringify(counts)}`)
+  })
+
+  await test('4.1 flyttade och omdöpta filer behåller sitt id', async () => {
+    const page = importPage!
+    const [moved, renamed] = [pick(firstIndex!, 'Fotograf A'), pick(firstIndex!, 'Fotograf B')]
+    await opfsMove(page, bank, moved.path, 'original/Fotograf C/Flyttad hit.jpg')
+    await opfsMove(page, bank, renamed.path, renamed.path.replace(/[^/]+$/, 'Nytt namn.jpg'))
+    await clickButton(page, 'Sök igen')
+    const { counts, lists } = await waitForPreview(page)
+    assert(counts.moved === 2 && counts.new === 0 && counts.removed === 0, `Efter flytt: ${JSON.stringify(counts)}`)
+    assert(
+      (lists['Flyttade eller omdöpta, behåller sitt id'] ?? []).includes(`${moved.path} → original/Fotograf C/Flyttad hit.jpg`),
+      'Flytten visas inte som från → till',
+    )
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const byId = new Map(index.images.map((image) => [image.id, image]))
+    assert(byId.get(moved.id)?.path === 'original/Fotograf C/Flyttad hit.jpg', 'Den flyttade bilden bytte id')
+    assert(byId.get(moved.id)?.photographer === 'Fotograf C', 'Fotografen följer inte med flytten')
+    assert(byId.get(renamed.id)?.path.endsWith('/Nytt namn.jpg'), 'Den omdöpta bilden bytte id')
+    assert(index.images.length === firstIndex!.images.length, 'Antalet bilder ändrades')
+    assert((await readOpfs(page, `${bank}/app-data/index.prev.json`)) === firstIndexText, 'index.prev.json är inte förra versionen')
+    firstIndex = index
+  })
+
+  await test('4.1 ändrade, borttagna, nya och kopierade filer', async () => {
+    const page = importPage!
+    const [changed, removed, source] = [
+      pick(firstIndex!, 'Fotograf A', 1),
+      pick(firstIndex!, 'Fotograf B', 1),
+      pick(firstIndex!, 'Fotograf A', 2),
+    ]
+    await opfsAppend(page, bank, changed.path, 'ändrad')
+    await opfsDelete(page, bank, removed.path)
+    await opfsCopy(page, bank, source.path, 'original/Fotograf C/Ny bild.jpg', 'ny')
+    await opfsCopy(page, bank, source.path, 'original/Fotograf C/Kopia.jpg')
+    await clickButton(page, 'Sök efter ändringar')
+    const { counts, lists } = await waitForPreview(page)
+    const summary = JSON.stringify(counts)
+    assert(counts.new === 1 && counts.changed === 1 && counts.removed === 1 && counts.moved === 0, summary)
+    assert(
+      (lists['Dubbletter med exakt samma innehåll, importeras inte'] ?? []).some((line) =>
+        line.startsWith('original/Fotograf C/Kopia.jpg'),
+      ),
+      'Kopian visas inte som dubblett',
+    )
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const byPath = new Map(index.images.map((image) => [image.path, image]))
+    const nextId = `MB-${String(firstIndex!.lastId! + 1).padStart(6, '0')}`
+    assert(byPath.get('original/Fotograf C/Ny bild.jpg')?.id === nextId, `Den nya bilden fick inte ${nextId}`)
+    assert(byPath.get(changed.path)?.id === changed.id, 'Den ändrade bilden bytte id')
+    assert(byPath.get(changed.path)?.hash !== changed.hash, 'Den ändrade bilden fick inte nytt fingeravtryck')
+    assert(!index.images.some((image) => image.id === removed.id), 'Den borttagna bilden finns kvar i indexet')
+    assert(!byPath.has('original/Fotograf C/Kopia.jpg'), 'Kopian importerades')
+
+    // Ett id återanvänds aldrig, inte ens när bilden har tagits bort.
+    await opfsDelete(page, bank, 'original/Fotograf C/Ny bild.jpg')
+    await opfsCopy(page, bank, source.path, 'original/Fotograf C/Ännu en.jpg', 'en till')
+    await clickButton(page, 'Sök efter ändringar')
+    await waitForPreview(page)
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const after = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const reused = after.images.find((image) => image.path === 'original/Fotograf C/Ännu en.jpg')
+    const expectedId = `MB-${String(firstIndex!.lastId! + 2).padStart(6, '0')}`
+    assert(reused?.id === expectedId, `Den nya bilden fick ${reused?.id}, väntade ${expectedId}`)
+    firstIndex = after
+  })
+
+  await test('4.1 en avbruten import fortsätter där den slutade', async () => {
+    const page = importPage!
+    const path = 'original/Fotograf C/Avbruten.jpg'
+    const source = pick(firstIndex!, 'Fotograf A', 3)
+    await opfsCopy(page, bank, source.path, path, 'avbruten')
+    const id = `MB-${String(firstIndex!.lastId! + 1).padStart(6, '0')}`
+    // Som om en import avbröts efter att den här bilden blev klar.
+    await page.evaluate(
+      async (bank, path, id) => {
+        const hashModule = '/src/import/hash.ts'
+        const { quickHash }: typeof import('../src/import/hash.ts') = await import(hashModule)
+        const opfs = await navigator.storage.getDirectory()
+        let directory = await opfs.getDirectoryHandle(bank)
+        for (const part of ['Original', ...path.split('/').slice(1, -1)]) directory = await directory.getDirectoryHandle(part)
+        const file = await (await directory.getFileHandle(path.split('/').pop()!)).getFile()
+        const record = { id, path, hash: await quickHash(file), fileSize: file.size, fileModified: file.lastModified, description: 'Klar före avbrottet', alternates: [], previewProblem: null }
+        const imports = await (await opfs.getDirectoryHandle(bank)).getDirectoryHandle('app-data').then((d) => d.getDirectoryHandle('import', { create: true }))
+        const writable = await (await imports.getFileHandle('pagaende.jsonl', { create: true })).createWritable()
+        await writable.write(JSON.stringify(record) + '\n{"trasig')
+        await writable.close()
+      },
+      bank,
+      path,
+      id,
+    )
+    await clickButton(page, 'Sök efter ändringar')
+    const { counts } = await waitForPreview(page)
+    await waitForText(page, '1 bilder blev klara i en avbruten import')
+    assert(counts.new === 0, `Den redan klara bilden räknas som ny: ${JSON.stringify(counts)}`)
+    await clickButton(page, 'Fortsätt importen')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const record = index.images.find((image) => image.path === path)
+    assert(record?.id === id && record.description === 'Klar före avbrottet', 'Bilden från den avbrutna importen gjordes om')
+    assert(index.lastId === firstIndex!.lastId! + 1, `lastId är ${index.lastId}`)
+    assert(!(await readOpfs(page, `${bank}/app-data/import/pagaende.jsonl`)), 'pagaende.jsonl ligger kvar')
+    await clickButton(page, 'Tillbaka till bildbanken')
+    await waitForText(page, `${index.images.length} bilder`)
+  })
+  await (importPage as Page | null)?.close()
 } finally {
   await browser.close()
   await server.close()

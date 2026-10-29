@@ -7,6 +7,8 @@ interface FileSystemHandlePermissionDescriptor {
 interface FileSystemHandle {
   queryPermission(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>
   requestPermission(descriptor?: FileSystemHandlePermissionDescriptor): Promise<PermissionState>
+  // Byter namn på filen i samma mapp.
+  move(newName: string): Promise<void>
 }
 
 interface DirectoryPickerOptions {
