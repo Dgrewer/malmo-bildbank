@@ -6,7 +6,10 @@ Appen läser hela bildbanken från `app-data/index.json`. Miniatyrer och förhan
 app-data/
   index.json
   index.prev.json            föregående version, sparas vid varje import
+  embeddings.bin             AI-vektorer för AI-sök, se nedan
   import/pagaende.jsonl      pågående import, finns bara medan en import pågår eller är avbruten
+  import/pagaende.bin        AI-vektorer i en pågående import, samma format som embeddings.bin
+  models/<modell>/           AI-modellen, laddas ner med npm run download-model
   thumbs/MB-000001.webp      miniatyr, längsta sidan högst 400 px
   previews/MB-000001.webp    förhandsbild, längsta sidan högst 1600 px
 ```
@@ -31,6 +34,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `lastId` | heltal | Högsta id-numret som någonsin har delats ut. Nya bilder får nästa nummer, så ett id återanvänds aldrig, inte ens när bilden har tagits bort. Saknas i äldre index, och räknas då från bildernas och de flyttade dubbletternas id. |
 | `images` | lista | En post per bild, sorterad efter id. |
 | `duplicates` | lista | Filer som importen har valt bort som dubbletter, se Import. Varje post har `path`, `hash` och `keptId`, id:t för bilden som behölls. Saknas i äldre index. |
+| `embeddings` | objekt | AI-vektorerna i `embeddings.bin`: `file` (`"embeddings.bin"`), `model` (modellens mapp i `app-data/models/`), `dimensions` och `count`. Saknas om ingen bild har en vektor. |
 
 ## En post
 
@@ -82,6 +86,34 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 
 Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade datum är `null`.
 
+## AI-vektorer: app-data/embeddings.bin
+
+En normaliserad vektor (längd 1) per bild, från bildmodellen i SigLIP 2 (`siglip2-base-patch16-224`). En sökfras ger en vektor från textmodellen, och bildernas likhet med frasen är skalärprodukten.
+
+Filen är binär. Alla tal är little-endian.
+
+| Byte | Typ | Innehåll |
+|---|---|---|
+| 0–3 | 4 tecken | `MBEV` |
+| 4–7 | uint32 | Formatversion, `1` |
+| 8–11 | uint32 | Antal dimensioner, 768 |
+| 12–15 | uint32 | Antal rader |
+| 16– | rader | Varje rad: id-numret (uint32, 1 för `MB-000001`) följt av vektorn (dimensioner × float32) |
+
+- Raderna ligger i samma ordning som bilderna i `index.json`, alltså efter id.
+- Bilder med `previewProblem` har ingen rad.
+- Varje rad har sitt id. Läs därför vektorerna efter id, inte efter radnummer. Ett index och en vektorfil från olika importer fungerar då ihop: en bild utan rad saknas bara i AI-sök.
+- Vektorn räknas ut från miniatyren, så att alla format behandlas likadant, även RAW, HEIC och film.
+- Har `embeddings.model` i indexet ett annat namn än appens modell räknas alla vektorer om vid nästa import.
+
+### Modellen
+
+`npm run download-model -- <bildbanksmapp>` laddar ner modellen från Hugging Face (`onnx-community/siglip2-base-patch16-224-ONNX`, låst till en bestämd version) till `app-data/models/siglip2-base-patch16-224/`. Skriptet kontrollerar varje fil mot dess kontrollsumma. Det är det enda steget som hämtar något från internet.
+
+- Textmodellen, `onnx/text_model_quantized.onnx` (283 MB), är 8-bitars och körs med WebAssembly. Den laddas när någon söker.
+- Bildmodellen, `onnx/vision_model_fp16.onnx` (186 MB), är 16-bitars och används bara vid import. Den körs på grafikkortet (WebGPU), cirka 0,2 sekunder per bild. Utan användbart grafikkort körs den med WebAssembly, cirka 3 sekunder per bild.
+- Appen läser modellfilerna ur bildbankens mapp. Transformers.js får inte hämta något från internet, och ONNX Runtimes WebAssembly-filer följer med appen.
+
 ## Import
 
 Importen körs i appen, under Importera. Originalmappen väljs per dator, och kan ligga utanför bildbanken, t.ex. på G:. Varje mapp direkt under originalmappen är en fotograf, och under den kan bilder ligga i undermappar i flera nivåer. `path` räknas alltid från originalmappen och börjar med `original/`.
@@ -101,7 +133,8 @@ Importen körs i appen, under Importera. Originalmappen väljs per dator, och ka
 - Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.
 - Indexet skrivs först till `index.tmp.json`. Sedan sparas den nuvarande filen som `index.prev.json`, och den nya filen byter namn till `index.json`. För att gå tillbaka en version: byt namn på `index.prev.json` till `index.json`.
-- Ordningen är alltid: miniatyrer och förhandsbilder först, sedan indexet, sist borttagning av bildfiler som det nya indexet inte längre pekar på. Ett index pekar därför aldrig på bildfiler som saknas, även om importen avbryts.
+- AI-vektorer räknas ut för nya och ändrade bilder, och för bilder som saknar en vektor. Saknas modellen görs importen utan AI-vektorer, och förhandsvisningen säger det.
+- Ordningen är alltid: miniatyrer och förhandsbilder först, sedan AI-vektorerna, sedan indexet, sist borttagning av bildfiler som det nya indexet inte längre pekar på. Ett index pekar därför aldrig på bildfiler som saknas, även om importen avbryts.
 - `index.prev.json` skrivs bara över med ett giltigt index, aldrig med en tom eller trasig fil.
 - När en import startar städas det som en avbruten import har lämnat kvar, och det som gjordes visas i förhandsvisningen:
   - `index.tmp.json` tas bort. Är `index.json` trasig men `index.tmp.json` hel används den i stället, och annars `index.prev.json`.

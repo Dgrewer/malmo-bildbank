@@ -15,6 +15,8 @@ import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
+import { decodeVectors } from '../src/ai/embeddings.ts'
+import { MODEL } from '../src/ai/modelInfo.ts'
 import { findDuplicates } from '../src/catalog/duplicates.ts'
 import {
   extension,
@@ -113,8 +115,16 @@ async function openPage(url: string, setup?: (page: Page) => Promise<unknown>): 
 async function waitForText(page: Page, text: string, timeout = 30_000) {
   await page
     .waitForFunction((t) => document.body.innerText.includes(t), { timeout }, text)
-    .catch(() => {
-      throw new Error(`Texten "${text}" syntes inte`)
+    .catch(async () => {
+      // Felmeddelanden på sidan gör det lättare att se varför.
+      const alerts = await page
+        .evaluate(() =>
+          [...document.querySelectorAll('[role="alert"], [role="status"], .error, .import-progress')]
+            .map((element) => element.textContent?.trim())
+            .join(' | '),
+        )
+        .catch(() => '')
+      throw new Error(`Texten "${text}" syntes inte${alerts ? `. Sidan visar: ${alerts}` : ''}`)
     })
 }
 
@@ -476,6 +486,29 @@ const opfsDelete = (page: Page, bank: string, file: string) => opfs(page, bank, 
 const opfsAppend = (page: Page, bank: string, file: string, text: string) => opfs(page, bank, file, 'append', text)
 
 // Kopierar en fil. Med extra läggs text till på slutet, så att innehållet blir ett annat.
+// Läser en fil i OPFS som bytes, t.ex. "importtest/app-data/embeddings.bin".
+async function readOpfsBytes(page: Page, path: string): Promise<Buffer | null> {
+  const base64 = await page.evaluate(async (path) => {
+    const parts = path.split('/')
+    const name = parts.pop()!
+    try {
+      let directory = await navigator.storage.getDirectory()
+      for (const part of parts) directory = await directory.getDirectoryHandle(part)
+      const bytes = new Uint8Array(await (await (await directory.getFileHandle(name)).getFile()).arrayBuffer())
+      let text = ''
+      for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+      return btoa(text)
+    } catch {
+      return null
+    }
+  }, path)
+  return base64 === null ? null : Buffer.from(base64, 'base64')
+}
+
+function toArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
+}
+
 async function opfsCopy(page: Page, bank: string, from: string, to: string, extra = '') {
   await opfs(page, bank, to, 'write', (await opfs(page, bank, from, 'read')) as string, extra)
 }
@@ -936,9 +969,33 @@ try {
     await waitForPreview(page)
     await waitForText(page, 'bilder blev klara i en avbruten import')
     await clickButton(page, 'Fortsätt importen')
-    // Första importen skapar miniatyrer och förhandsbilder för alla bilder.
+    // Avbryt igen när AI-vektorer för minst 10 bilder är klara.
+    await page.waitForFunction(
+      () => {
+        const match = document.querySelector('.import-progress p')?.textContent?.match(/AI-vektorer – (\d+) av/)
+        return match && Number(match[1]) >= 10
+      },
+      { timeout: 600_000, polling: 100 },
+    )
+    await clickButton(page, 'Avbryt')
+    await waitForText(page, 'Importen avbröts när AI-vektorer', 60_000)
+    const afterAiAbort = await bankProblems(page, bank)
+    assert(!afterAiAbort.problems.length, afterAiAbort.problems.slice(0, 5).join('\n      '))
+    assert(!afterAiAbort.index, 'index.json skrevs fast importen avbröts')
+    const pendingVectors = await readOpfsBytes(page, `${bank}/app-data/import/pagaende.bin`)
+    const saved = pendingVectors && decodeVectors(toArrayBuffer(pendingVectors), MODEL.dimensions)
+    assert(saved && saved.size >= 10, `Bara ${saved?.size ?? 0} AI-vektorer sparades i pagaende.bin`)
+    await clickButton(page, 'Fortsätt')
+    await waitForPreview(page)
+    await clickButton(page, 'Fortsätt importen')
+    // Första importen skapar miniatyrer, förhandsbilder och AI-vektorer för alla bilder.
+    const aiFrom = Date.now()
     await waitForText(page, 'Importen är klar', 900_000)
-    console.log(`      Första importen tog ${Math.round((Date.now() - started) / 1000)} s, med avbrott`)
+    const missing = expected.kept.length - saved.size
+    console.log(
+      `      Första importen tog ${Math.round((Date.now() - started) / 1000)} s, med två avbrott. ` +
+        `AI-vektorer för ${missing} bilder tog ${Math.round((Date.now() - aiFrom) / 1000)} s`,
+    )
     const done = await bankProblems(page, bank)
     assert(!done.problems.length, done.problems.slice(0, 5).join('\n      '))
     assert(done.index && done.journal === 0, 'Indexet saknas eller pagaende.jsonl ligger kvar')
@@ -978,6 +1035,76 @@ try {
     )
     const skippedAgain = (await readPreview(page)).lists[DUPLICATES_TITLE] ?? []
     assert(skippedAgain.length === expected.dropped.length, 'Bortvalda dubbletter visas inte vid nästa sökning')
+  })
+
+  await test('4.4 AI-vektorerna sparas i embeddings.bin och modellen körs lokalt', async () => {
+    const page = importPage!
+    const withImage = firstIndex!.images.filter((image) => !image.previewProblem)
+    const info = firstIndex!.embeddings
+    assert(
+      info?.model === MODEL.name && info.dimensions === MODEL.dimensions && info.count === withImage.length,
+      `Fel embeddings i indexet: ${JSON.stringify(info)}, ${withImage.length} bilder har förhandsbild`,
+    )
+    const vectors = decodeVectors(toArrayBuffer((await readOpfsBytes(page, `${bank}/app-data/embeddings.bin`))!), MODEL.dimensions)
+    assert(vectors, 'embeddings.bin går inte att läsa')
+    assert(
+      JSON.stringify([...vectors.keys()]) === JSON.stringify(withImage.map((image) => image.id)),
+      'Raderna i embeddings.bin är inte bilderna med förhandsbild i indexets ordning',
+    )
+    for (const [id, vector] of vectors) {
+      const length = Math.hypot(...vector)
+      assert(Math.abs(length - 1) < 1e-3, `Vektorn för ${id} är inte normaliserad (${length})`)
+    }
+    // Text- och bildmodellen körs i sidan. Färgade bilder ska ligga närmast
+    // texten med rätt färg, på svenska, och en sparad vektor ska gå att räkna
+    // fram igen ur miniatyren.
+    const firstId = withImage[0].id
+    const result = await page.evaluate(
+      async (bank, firstId) => {
+        // Utvecklingsservern lämnar ut appens moduler, så modellkoden kan köras direkt.
+        const url = '/src/ai/model.ts'
+        const { imageEmbedding, textEmbeddings } = (await import(url)) as {
+          imageEmbedding: (root: FileSystemDirectoryHandle, image: ImageData) => Promise<Float32Array>
+          textEmbeddings: (root: FileSystemDirectoryHandle, texts: string[]) => Promise<Float32Array[]>
+        }
+        const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)
+        const solid = (color: string) => {
+          const canvas = new OffscreenCanvas(224, 224)
+          const context = canvas.getContext('2d')!
+          context.fillStyle = color
+          context.fillRect(0, 0, 224, 224)
+          return context.getImageData(0, 0, 224, 224)
+        }
+        const dot = (a: Float32Array, b: Float32Array) => a.reduce((sum, value, i) => sum + value * b[i], 0)
+        const started = performance.now()
+        const [red, blue] = await textEmbeddings(root, ['en röd bild', 'en blå bild'])
+        const textMs = performance.now() - started
+        const redImage = await imageEmbedding(root, solid('#d00'))
+        const blueImage = await imageEmbedding(root, solid('#00d'))
+        const thumb = await (await (await (await root.getDirectoryHandle('app-data')).getDirectoryHandle('thumbs')).getFileHandle(`${firstId}.webp`)).getFile()
+        const bitmap = await createImageBitmap(thumb)
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+        const context = canvas.getContext('2d')!
+        context.drawImage(bitmap, 0, 0)
+        const again = await imageEmbedding(root, context.getImageData(0, 0, bitmap.width, bitmap.height))
+        return {
+          redRed: dot(redImage, red),
+          redBlue: dot(redImage, blue),
+          blueBlue: dot(blueImage, blue),
+          blueRed: dot(blueImage, red),
+          again: [...again],
+          textMs,
+        }
+      },
+      bank,
+      firstId,
+    )
+    console.log(`      Textmodellen laddades och körde på ${Math.round(result.textMs)} ms`)
+    assert(result.redRed > result.redBlue, `Röd bild: röd ${result.redRed}, blå ${result.redBlue}`)
+    assert(result.blueBlue > result.blueRed, `Blå bild: blå ${result.blueBlue}, röd ${result.blueRed}`)
+    const stored = vectors.get(firstId)!
+    const same = result.again.reduce((sum, value, i) => sum + value * stored[i], 0)
+    assert(same > 0.999, `Vektorn för ${firstId} blir inte densamma igen (${same})`)
   })
 
   await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {
@@ -1252,7 +1379,8 @@ try {
   await test('4.7 nya original kopieras till bildbanken utan att något skrivs över', async () => {
     // En tom bildbank och en egen originalmapp ("externa", som G:) med ett
     // RAW-par och en fil vars namn redan finns i bildbankens original/.
-    const page = await openPage('/?testdata&fresh&name=kopiabank')
+    // Utan AI-modell: importen fungerar ändå, utan AI-vektorer.
+    const page = await openPage('/?testdata&fresh&nomodel&name=kopiabank')
     await waitForText(page, 'Hittar inte app-data/index.json', 120_000)
     await page.evaluate(async () => {
       const opfs = await navigator.storage.getDirectory()
@@ -1294,6 +1422,7 @@ try {
     await clickButton(page, 'Sök efter ändringar')
     const { counts } = await waitForPreview(page)
     assert(counts.new === 2, `Väntade 2 nya bilder: ${JSON.stringify(counts)}`)
+    await waitForText(page, 'AI-modellen saknas i app-data/models/')
     const checkbox = 'label.copy-originals input[type="checkbox"]'
     assert(!(await page.$eval(checkbox, (input) => (input as HTMLInputElement).checked)), 'Kryssrutan är ikryssad från början')
     await page.locator(checkbox).click()
@@ -1301,6 +1430,9 @@ try {
     await clickButton(page, 'Starta import')
     await waitForText(page, 'Importen är klar', 120_000)
     await waitForText(page, '2 original kopierades till bildbankens original/.')
+    const copiedIndex = JSON.parse((await readOpfs(page, 'kopiabank/app-data/index.json'))!) as IndexFile
+    assert(!copiedIndex.embeddings, `Indexet har AI-vektorer fast modellen saknas: ${JSON.stringify(copiedIndex.embeddings)}`)
+    assert(!(await readOpfs(page, 'kopiabank/app-data/embeddings.bin')), 'embeddings.bin skrevs fast modellen saknas')
     const notOverwritten = (await readPreviewLists(page))[
       'Fanns redan i bildbankens original/ med annat innehåll, skrevs inte över'
     ]

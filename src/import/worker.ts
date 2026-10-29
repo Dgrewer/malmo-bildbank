@@ -2,9 +2,13 @@
 // gränssnittet inte fryser. Mapphandtagen skickas hit från adminvyn.
 //
 //   scan    läser originalmappen, räknar fingeravtryck och jämför med indexet
-//   import  läser metadata, skapar miniatyrer och förhandsbilder och skriver indexet
+//   import  läser metadata, skapar miniatyrer och förhandsbilder, räknar ut
+//           AI-vektorer och skriver indexet
 //   abort   avbryter efter den fil som håller på. Det som är klart sparas.
 
+import { decodeVectors, encodeVectors, type Vectors } from '../ai/embeddings.ts'
+import { hasModel, imageEmbedding, visionDevice, type Device } from '../ai/model.ts'
+import { MODEL } from '../ai/modelInfo.ts'
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
@@ -49,6 +53,10 @@ interface Session {
   // Id:n från en avbruten import som inte hör till den här originalmappen.
   // Deras miniatyrer tas bort när indexet är sparat, om id:t inte har delats ut igen.
   foreign: Set<string>
+  // AI-vektorer som fortfarande gäller, efter id. Nya och ändrade bilder får nya.
+  vectors: Vectors
+  // Finns AI-modellen i app-data/models/?
+  model: boolean
 }
 
 const scope = self as unknown as {
@@ -212,9 +220,18 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     }
   }
   if (redone) recovery.push(`${redone} bilder saknade miniatyr eller förhandsbild. De görs om.`)
-  const pending = new Journal(bank, journal.records)
+  // Vektorer gäller bara för bilder med samma innehåll som när vektorn räknades ut.
+  const stored = index?.embeddings?.model === MODEL.name ? await readVectors(bank) : new Map()
+  const sameContent = plan.items.filter((item) => item.change === 'unchanged' || item.change === 'moved')
+  const vectors: Vectors = new Map()
+  for (const item of sameContent) {
+    const vector = journal.vectors.get(item.id) ?? stored.get(item.id)
+    if (vector) vectors.set(item.id, vector)
+  }
+  const model = await hasModel(bank)
+  const pending = new Journal(bank, journal.records, new Map([...vectors].filter(([id]) => journal.vectors.has(id))))
   pending.drop(foreign)
-  session = { bank, originals, indexed, thumbs, previews, plan, journal: pending, resumed, duplicates, foreign }
+  session = { bank, originals, indexed, thumbs, previews, plan, journal: pending, resumed, duplicates, foreign, vectors, model }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -228,6 +245,12 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     skipped: scanned.skipped,
     resumed: plan.items.filter((item) => resumed.has(item.id) && item.change === 'unchanged').length,
     recovery,
+    ai: {
+      model,
+      missing: plan.items.filter(
+        (item) => !vectors.has(item.id) && !(item.change === 'unchanged' && item.previous?.previewProblem),
+      ).length,
+    },
   }
 }
 
@@ -309,6 +332,55 @@ async function withImages(current: Session, record: ImageRecord, decode: () => P
   }
 }
 
+async function readVectors(bank: FileSystemDirectoryHandle): Promise<Vectors> {
+  const file = await readFile(bank, 'app-data/embeddings.bin')
+  return (file && decodeVectors(await file.arrayBuffer(), MODEL.dimensions)) ?? new Map()
+}
+
+// Miniatyren som pixlar. AI-vektorn räknas ut från den, så att alla format,
+// även RAW, HEIC och film, behandlas likadant.
+async function thumbPixels(current: Session, id: string): Promise<ImageData | null> {
+  const file = await readFile(current.thumbs, `${id}.webp`)
+  if (!file) return null
+  const bitmap = await createImageBitmap(file)
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+  const context = canvas.getContext('2d')!
+  context.drawImage(bitmap, 0, 0)
+  bitmap.close()
+  return context.getImageData(0, 0, canvas.width, canvas.height)
+}
+
+// Räknar ut AI-vektorer för bilder som saknar en. Går det inte, t.ex. för att
+// modellen är trasig, sparas importen ändå, utan vektorer för de bilderna.
+async function computeVectors(current: Session, images: ImageRecord[]) {
+  const result = { computed: 0, problem: null as string | null, device: null as Device | null }
+  if (!current.model) return result
+  const missing = images.filter((image) => !image.previewProblem && !current.vectors.has(image.id))
+  if (!missing.length) return result
+  try {
+    progress('ai', 0, missing.length)
+    result.device = await visionDevice(current.bank)
+    for (const [n, image] of missing.entries()) {
+      await breathe()
+      progress('ai', n, missing.length)
+      const pixels = await thumbPixels(current, image.id)
+      if (!pixels) continue
+      const vector = await imageEmbedding(current.bank, pixels)
+      current.vectors.set(image.id, vector)
+      await current.journal.addVector(image.id, vector)
+      result.computed++
+    }
+  } catch (error) {
+    if (error instanceof Aborted) {
+      await current.journal.flush()
+      throw error
+    }
+    result.problem = `AI-vektorerna kunde inte räknas ut: ${error instanceof Error ? error.message : error}`
+  }
+  progress('ai', missing.length, missing.length)
+  return result
+}
+
 async function removeImages(current: Session, id: string) {
   await removeFile(current.thumbs, `${id}.webp`)
   await removeFile(current.previews, `${id}.webp`)
@@ -366,6 +438,7 @@ async function runImport(current: Session, copy: boolean) {
   // De andra tas inte med i indexet, men filerna ligger kvar i originalmappen.
   const dropped = findDuplicates(all)
   const images = all.filter((image) => !dropped.has(image))
+  const ai = await computeVectors(current, images)
   // Är originalmappen bildbankens egen original/ finns inget att kopiera.
   const bankOriginals = await findDirectory(bank, 'original')
   const inBank = bankOriginals ? await bankOriginals.isSameEntry(current.originals) : false
@@ -376,15 +449,28 @@ async function runImport(current: Session, copy: boolean) {
     ...current.duplicates,
     ...[...dropped].map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
   ]
+  // Vektorerna skrivs före indexet. Varje rad har sitt id, så ett äldre index
+  // fungerar ihop med en nyare vektorfil.
+  const appData = await ensureDirectory(bank, 'app-data')
+  const vectors: Vectors = new Map()
+  for (const image of images) {
+    const vector = current.vectors.get(image.id)
+    if (vector && !image.previewProblem) vectors.set(image.id, vector)
+  }
+  if (vectors.size) await writeFile(appData, 'embeddings.bin', new Blob([encodeVectors(vectors, MODEL.dimensions)]))
   const index: IndexFile = {
     version: INDEX_VERSION,
     generatedAt: new Date().toISOString(),
     lastId: plan.lastId,
     images,
     duplicates,
+    ...(vectors.size && {
+      embeddings: { file: 'embeddings.bin', model: MODEL.name, dimensions: MODEL.dimensions, count: vectors.size },
+    }),
   }
-  await writeIndexFile(await ensureDirectory(bank, 'app-data'), JSON.stringify(index, null, 2))
+  await writeIndexFile(appData, JSON.stringify(index, null, 2))
   await journal.remove()
+  if (!vectors.size) await removeFile(appData, 'embeddings.bin')
   // Bilder som inte finns kvar i bildbanken behöver inga miniatyrer. De tas
   // bort först när det nya indexet är sparat, så att inget försvinner om
   // skrivningen misslyckas.
@@ -399,6 +485,7 @@ async function runImport(current: Session, copy: boolean) {
     total: images.length,
     duplicates: [...dropped].map(([image, kept]) => ({ path: image.path, sameAs: kept.path })),
     copied,
+    ai: { model: current.model, computed: ai.computed, total: vectors.size, problem: ai.problem, device: ai.device },
   }
 }
 

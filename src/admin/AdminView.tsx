@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { findDirectory } from '../fs/folder.ts'
 import { loadOriginalsFolder, saveOriginalsFolder } from '../fs/folderStore.ts'
+import { MODEL } from '../ai/modelInfo.ts'
 import type { FromWorker, ImportResult, Phase, ScanSummary, ToWorker } from '../import/protocol.ts'
 import { captureFrame } from '../import/videoFrame.ts'
 
@@ -26,6 +27,7 @@ const PHASE_TEXT: Record<Phase, string> = {
   scan: 'Letar efter bilder',
   hash: 'Räknar fingeravtryck',
   import: 'Importerar',
+  ai: 'Räknar ut AI-vektorer',
   copy: 'Kopierar original',
   save: 'Sparar index',
 }
@@ -257,7 +259,9 @@ export function AdminView({ bank, onClose }: Props) {
           <p role="status">
             {state.phase === 'import'
               ? `Importen avbröts efter ${count(state.done)} av ${count(state.total)} bilder. Det som är klart är sparat och fortsätter nästa gång.`
-              : 'Sökningen avbröts. Inget har ändrats.'}
+              : state.phase === 'ai'
+                ? `Importen avbröts när AI-vektorer för ${count(state.done)} av ${count(state.total)} bilder var klara. Det som är klart är sparat och fortsätter nästa gång.`
+                : 'Sökningen avbröts. Inget har ändrats.'}
           </p>
           <div className="actions">
             <button type="button" className="primary" onClick={scan}>
@@ -278,6 +282,19 @@ export function AdminView({ bank, onClose }: Props) {
             items={state.result.duplicates}
             render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
           />
+          {state.result.ai.model && (
+            <p className="ai-result">
+              {count(state.result.ai.computed)} nya AI-vektorer
+              {state.result.ai.device === 'webgpu' && ', uträknade med grafikkortet'}
+              {state.result.ai.device === 'wasm' && ', uträknade utan grafikkort (långsammare)'}.{' '}
+              {count(state.result.ai.total)} bilder kan hittas med AI-sök.
+            </p>
+          )}
+          {state.result.ai.problem && (
+            <p className="warning" role="alert">
+              {state.result.ai.problem}
+            </p>
+          )}
           {state.result.copied && (
             <p className="copy-result">
               {count(state.result.copied.copied)} original kopierades till bildbankens original/.
@@ -303,7 +320,7 @@ interface PreviewProps {
 
 function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
   const work = summary.new.length + summary.changed.length + summary.moved.length
-  const nothing = work === 0 && summary.removed.length === 0
+  const nothing = work === 0 && summary.removed.length === 0 && !(summary.ai.model && summary.ai.missing)
   // Bilder som tas bort förlorar sina taggar och rättigheter i indexet. Har fel
   // originalmapp valts ser det ut som att alla bilder har tagits bort, så
   // borttagningen måste bekräftas.
@@ -326,6 +343,19 @@ function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
       {summary.resumed > 0 && (
         <p className="note">
           {count(summary.resumed)} bilder blev klara i en avbruten import och behöver inte göras om.
+        </p>
+      )}
+      {summary.ai.model ? (
+        summary.ai.missing > 0 && (
+          <p className="note ai-note">
+            {count(summary.ai.missing)} bilder får AI-vektorer för AI-sök. Med grafikkort tar det några tiondels
+            sekunder per bild, utan grafikkort några sekunder.
+          </p>
+        )
+      ) : (
+        <p className="warning ai-note">
+          AI-modellen saknas i app-data/models/{MODEL.name}. Bilderna importeras, men kan inte hittas med AI-sök förrän
+          modellen finns och importen har körts igen.
         </p>
       )}
       <ul className="change-counts">

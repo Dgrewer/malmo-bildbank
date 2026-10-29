@@ -8,11 +8,14 @@
 //   &repeat=3000            upprepa indexets poster till 3 000 bilder
 //   &originals              kopiera också originalbilderna
 //   &fresh                  tom app-data, som en bildbank som aldrig har importerats
+//                           (AI-modellen i app-data/models/ finns ändå kvar)
+//   &nomodel                utan AI-modellen
 //   &keep                   använd mappen som den är sedan förra sidladdningen
 //   &name=importtest        mappens namn i OPFS (standard: källmappens namn)
 //
-// Originalen ligger kvar i OPFS mellan sidladdningar och kopieras bara om de
-// saknas eller har en annan storlek. Filer som inte finns i testdata/ tas bort.
+// Originalen och AI-modellen ligger kvar i OPFS mellan sidladdningar och
+// kopieras bara om de saknas eller har en annan storlek. Filer som inte finns i
+// testdata/ tas bort.
 //
 // Utvecklingsservern lägger in den här filen som ett eget skript före appen
 // (se testdataServer i vite.config.ts). Appen importerar den aldrig, så den
@@ -35,6 +38,7 @@ interface Options {
   skip: string | null
   originals: boolean
   fresh: boolean
+  model: boolean
 }
 
 async function list(path: string): Promise<Entry[]> {
@@ -45,9 +49,19 @@ async function list(path: string): Promise<Entry[]> {
 
 const isOriginal = (name: string) => name.toLowerCase() === 'original'
 const isAppData = (name: string) => name.toLowerCase() === 'app-data'
+const isModels = (name: string) => name.toLowerCase() === 'models'
+// Stora filer som får ligga kvar mellan sidladdningar.
+const isKept = (path: string) => /(^|\/)original\//i.test(path) || /(^|\/)app-data\/models\//i.test(path)
 
-async function copy(source: string, target: FileSystemDirectoryHandle, options: Options, depth: number) {
-  const entries = (await list(source)).filter((entry) => !(depth === 0 && entry.name === options.skip))
+// inAppData: källmappen är app-data på översta nivån. Med &fresh kopieras
+// bara modellerna därifrån.
+async function copy(source: string, target: FileSystemDirectoryHandle, options: Options, depth: number, inAppData = false) {
+  const entries = (await list(source)).filter(
+    (entry) =>
+      !(depth === 0 && entry.name === options.skip) &&
+      !(inAppData && options.fresh && !isModels(entry.name)) &&
+      !(inAppData && !options.model && isModels(entry.name)),
+  )
   const wanted = new Set(entries.map((entry) => entry.name))
   for await (const existing of target.keys()) {
     if (!wanted.has(existing)) await target.removeEntry(existing, { recursive: true })
@@ -57,14 +71,13 @@ async function copy(source: string, target: FileSystemDirectoryHandle, options: 
     const inOriginals = /(^|\/)original\//i.test(path)
     if (entry.kind === 'directory') {
       const directory = await target.getDirectoryHandle(entry.name, { create: true })
-      // app-data finns kvar men är tom med &fresh.
-      if (!(depth === 0 && isAppData(entry.name) && options.fresh)) await copy(path, directory, options, depth + 1)
+      await copy(path, directory, options, depth + 1, depth === 0 && isAppData(entry.name))
       continue
     }
     // Utan &originals skapas bara mapparna, inte bildfilerna.
     if (inOriginals && !options.originals) continue
     const handle = await target.getFileHandle(entry.name, { create: true })
-    if (inOriginals && (await handle.getFile()).size === entry.size) continue
+    if (isKept(path) && (await handle.getFile()).size === entry.size) continue
     const response = await fetch(`/__testdata/file?path=${encodeURIComponent(path)}`)
     await response.body!.pipeTo(await handle.createWritable())
   }
@@ -76,10 +89,22 @@ async function loadTestdataFolder(params: URLSearchParams): Promise<FileSystemDi
   const opfs = await navigator.storage.getDirectory()
   const root = await opfs.getDirectoryHandle(name, { create: true })
   if (params.has('keep')) return root
-  const options = { skip: params.get('skip'), originals: params.has('originals'), fresh: params.has('fresh') }
-  // Allt utom originalen tas bort och kopieras på nytt.
-  for await (const existing of root.keys()) {
-    if (!(isOriginal(existing) && options.originals)) await root.removeEntry(existing, { recursive: true })
+  const options = {
+    skip: params.get('skip'),
+    originals: params.has('originals'),
+    fresh: params.has('fresh'),
+    model: !params.has('nomodel'),
+  }
+  // Allt utom originalen och modellerna tas bort och kopieras på nytt.
+  for await (const [name, entry] of root.entries()) {
+    if (isOriginal(name) && options.originals) continue
+    if (isAppData(name) && entry.kind === 'directory') {
+      for await (const inner of entry.keys()) {
+        if (!(isModels(inner) && options.model)) await entry.removeEntry(inner, { recursive: true })
+      }
+      continue
+    }
+    await root.removeEntry(name, { recursive: true })
   }
   await copy(source, root, options, 0)
   return root

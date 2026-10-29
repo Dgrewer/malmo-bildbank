@@ -12,6 +12,16 @@ export interface IndexFile {
   // Filer som importen har valt bort som dubbletter (samma namn och tagningstid
   // som en bild med högre upplösning). De importeras inte igen.
   duplicates?: IndexDuplicate[]
+  // AI-vektorerna i app-data/embeddings.bin. Saknas om ingen bild har en vektor.
+  embeddings?: IndexEmbeddings
+}
+
+export interface IndexEmbeddings {
+  file: 'embeddings.bin'
+  // Modellens namn, mappen i app-data/models/. Byts modellen räknas alla vektorer om.
+  model: string
+  dimensions: number
+  count: number
 }
 
 export interface IndexDuplicate {
