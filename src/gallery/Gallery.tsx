@@ -79,14 +79,15 @@ function Thumbnail({ index, image, thumbs, left, top, size, onOpen }: ThumbnailP
   return (
     <button
       type="button"
-      className="gallery-cell"
+      className={image.blocked ? 'gallery-cell is-blocked' : 'gallery-cell'}
       data-index={index}
       style={{ transform: `translate(${left}px, ${top}px)`, width: size, height: size }}
       onClick={() => onOpen(index)}
-      aria-label={`${image.id}, foto ${image.photographer}`}
+      aria-label={`${image.id}, foto ${image.photographer}${image.blocked ? ', spärrad' : ''}`}
     >
       {thumb.status === 'ready' && <img src={thumb.url} alt="" draggable={false} />}
       {thumb.status === 'missing' && <span className="thumb-missing">Miniatyr saknas</span>}
+      {image.blocked && <span className="badge-blocked">Spärrad</span>}
     </button>
   )
 }

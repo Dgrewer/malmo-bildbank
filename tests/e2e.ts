@@ -15,6 +15,8 @@ import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
+import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
+import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
 const PORT = 5199
 const ORIGIN = `http://localhost:${PORT}`
@@ -156,7 +158,9 @@ async function galleryState(page: Page) {
 async function waitForThumbnails(page: Page) {
   await page.waitForFunction(
     () => {
-      const view = document.querySelector('.gallery')!.getBoundingClientRect()
+      const gallery = document.querySelector('.gallery')
+      if (!gallery) return false
+      const view = gallery.getBoundingClientRect()
       const cells = [...document.querySelectorAll('.gallery-cell')]
       return (
         cells.some((cell) => {
@@ -330,6 +334,77 @@ try {
     )
     await page.close()
   })
+
+  console.log('3.5 Detaljvy')
+
+  const index: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
+  const find = (match: (image: ImageRecord) => boolean) => index.images.findIndex(match)
+  const cases = [
+    { name: 'spärrad bild', index: find((i) => i.blocked), expect: ['Spärrad.', 'Bilden får inte användas'] },
+    {
+      name: 'utgångna rättigheter',
+      index: find((i) => rightsExpired(i) && !i.blocked),
+      expect: ['Rättigheterna gick ut'],
+    },
+    {
+      name: 'samtycke saknas',
+      index: find((i) => i.consent === 'missing' && !i.blocked && !rightsExpired(i)),
+      expect: ['Samtycke saknas från personerna på bilden'],
+    },
+    {
+      name: 'bild utan anmärkningar',
+      index: find((i) => !i.blocked && !rightsExpired(i) && i.consent !== 'missing'),
+      expect: [],
+    },
+  ]
+  const WARNINGS = ['Spärrad.', 'Rättigheterna gick ut', 'Samtycke saknas']
+
+  let detailPage: Page | null = null
+  for (const testCase of cases) {
+    await test(`3.5 ${testCase.name}`, async () => {
+      assert(testCase.index >= 0, 'Testdata saknar en sådan bild')
+      if (!detailPage) {
+        detailPage = await openPage('/?testdata', (p) => p.evaluateOnNewDocument(countObjectUrls))
+        await waitForThumbnails(detailPage)
+      }
+      const page = detailPage
+      const image = index.images[testCase.index]
+      await page.locator(`.gallery-cell[data-index="${testCase.index}"]`).click()
+      await page.waitForFunction(
+        () => {
+          const image = document.querySelector<HTMLImageElement>('dialog.detail[open] .detail-preview img')
+          return image && image.complete && image.naturalWidth > 0
+        },
+        { timeout: 15_000 },
+      )
+      await screenshot(page, `3.5-${testCase.name.replaceAll(' ', '-')}`)
+
+      const detail = await page.evaluate(() => {
+        const dialog = document.querySelector<HTMLDialogElement>('dialog.detail[open]')!
+        const preview = dialog.querySelector<HTMLImageElement>('.detail-preview img')!
+        return { text: dialog.innerText, width: preview.naturalWidth, height: preview.naturalHeight }
+      })
+      const rights = image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'
+      for (const value of [image.id, image.photographer, image.byline, image.terms, rights, ...testCase.expect]) {
+        assert(detail.text.includes(value), `Detaljvyn saknar "${value}"`)
+      }
+      for (const warning of WARNINGS.filter((w) => !testCase.expect.some((e) => e.startsWith(w)))) {
+        assert(!detail.text.includes(warning), `Detaljvyn visar "${warning}" i onödan`)
+      }
+      const expected = Math.min(1600, Math.max(image.width, image.height))
+      assert(Math.max(detail.width, detail.height) === expected, `Förhandsbilden är ${detail.width}×${detail.height}`)
+      if (image.blocked) {
+        const badge = await page.$(`.gallery-cell[data-index="${testCase.index}"] .badge-blocked`)
+        assert(badge, 'Spärrad bild är inte markerad i rutnätet')
+      }
+
+      await page.keyboard.press('Escape')
+      await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
+      const state = await galleryState(page)
+      assert(state.live === state.loaded, `Förhandsbildens URL frigjordes inte (${state.live} levande)`)
+    })
+  }
+  await (detailPage as Page | null)?.close()
 } finally {
   await browser.close()
   await server.close()

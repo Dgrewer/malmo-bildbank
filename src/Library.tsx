@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
 import { findDirectory } from './fs/folder.ts'
+import { DetailView } from './detail/DetailView.tsx'
 import { Gallery } from './gallery/Gallery.tsx'
 
 interface Catalog {
@@ -38,10 +39,12 @@ interface Props {
 
 export function Library({ root, onChangeFolder }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' })
+  const [selected, setSelected] = useState<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setState({ kind: 'loading' })
+    setSelected(null)
     loadCatalog(root).then(
       (catalog) => !cancelled && setState({ kind: 'ready', catalog }),
       (error) => !cancelled && setState({ kind: 'error', message: error instanceof Error ? error.message : String(error) }),
@@ -70,7 +73,15 @@ export function Library({ root, onChangeFolder }: Props) {
         </p>
       )}
       {state.kind === 'ready' && (
-        <Gallery images={state.catalog.images} thumbs={state.catalog.thumbs} onOpen={() => {}} />
+        <Gallery images={state.catalog.images} thumbs={state.catalog.thumbs} onOpen={setSelected} />
+      )}
+      {state.kind === 'ready' && selected !== null && (
+        <DetailView
+          key={selected}
+          image={state.catalog.images[selected]}
+          previews={state.catalog.previews}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   )

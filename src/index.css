@@ -8,6 +8,7 @@
   --error-text: #8a1c12;
   --warning-bg: #fff4d6;
   --warning-text: #6b4a00;
+  --blocked: #b3261e;
 
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -130,4 +131,123 @@ button.primary {
 .thumb-missing {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.gallery-cell.is-blocked img {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+.gallery-cell.is-blocked {
+  box-shadow: inset 0 0 0 3px var(--blocked);
+}
+
+.badge-blocked {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background: var(--blocked);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail {
+  width: min(1280px, 95vw);
+  height: min(900px, 92vh);
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.detail[open] {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+}
+
+.detail::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+
+.detail.is-blocked {
+  outline: 6px solid var(--blocked);
+}
+
+.detail-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  background: #111;
+  color: #ccc;
+}
+
+.detail-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.detail.is-blocked .detail-preview img {
+  opacity: 0.5;
+}
+
+.detail-info {
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.detail-header h2 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.blocked-banner {
+  background: var(--blocked);
+  color: #fff;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+}
+
+.warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+}
+
+.detail-fields dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.detail-fields dd {
+  margin: 0;
+}
+
+.detail-fields .expired {
+  color: var(--error-text);
+  font-weight: 600;
+}
+
+@media (max-width: 800px) {
+  .detail[open] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 45% 1fr;
+  }
 }
