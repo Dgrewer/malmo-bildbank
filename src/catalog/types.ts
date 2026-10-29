@@ -27,6 +27,7 @@ export interface ImageRecord {
   tags: string[]
   description: string
   alternates: string[]
+  durationSeconds: number | null
 }
 
 export function formatId(n: number): string {

@@ -17,16 +17,22 @@
 //   mapp blir förhandsbild, och paret blir en bild med RAW-filen som original
 //   och JPG:en i alternates. Utan JPG används den största JPG som är inbäddad i
 //   RAW-filen. Finns ingen av dem hoppas filen över med en varning.
+// - Video (mp4, mov, m4v) spelas inte upp. ffmpeg (ffmpeg-static) tar ut en
+//   bildruta som blir miniatyr och förhandsbild, och läser längd och inspelningstid.
 //
 // Villkor, rättighetsdatum, samtycke och spärr finns inte i bildfilerna. Skriptet
 // fyller i varierade testvärden så att varningarna i appen kan testas.
 
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import exifr from 'exifr'
+import ffmpegPath from 'ffmpeg-static'
 import heicDecode from 'heic-decode'
 import sharp, { type Sharp } from 'sharp'
-import { extension, HEIC_EXTENSIONS, RAW_EXTENSIONS } from '../src/catalog/fileFormat.ts'
+import { extension, HEIC_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS } from '../src/catalog/fileFormat.ts'
 import {
   formatId,
   INDEX_VERSION,
@@ -97,7 +103,8 @@ async function findSources(originalDir: string): Promise<Source[]> {
     for (const name of names) {
       if (paired.has(name) || SYSTEM_FILES.has(name.toLowerCase())) continue
       const ext = extension(name)
-      if (!SHARP_EXTENSIONS.has(ext) && !HEIC_EXTENSIONS.has(ext) && !RAW_EXTENSIONS.has(ext)) {
+      const known = [SHARP_EXTENSIONS, HEIC_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS].some((set) => set.has(ext))
+      if (!known) {
         console.warn(`  Hoppar över ${photographer}/${name}: inte en bildfil som stöds`)
         continue
       }
@@ -177,14 +184,65 @@ async function embeddedJpeg(data: Buffer): Promise<Buffer | null> {
   return best?.jpeg ?? null
 }
 
+const run = promisify(execFile)
+
+interface VideoInfo {
+  durationSeconds: number | null
+  takenAt: string | null
+}
+
+// ffmpeg utan utfil skriver filens uppgifter till stderr och avslutar med fel.
+async function probeVideo(file: string): Promise<VideoInfo> {
+  const output = await run(ffmpegPath!, ['-hide_banner', '-i', file]).then(
+    (result) => result.stderr,
+    (error: { stderr?: string }) => error.stderr ?? '',
+  )
+  const duration = output.match(/Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)/)
+  const created = output.match(/creation_time\s*:\s*(\S+)/)
+  // creation_time är i UTC. Lagras som lokal tid utan zon, som EXIF-tiderna.
+  const date = created ? new Date(created[1]) : null
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    durationSeconds: duration ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]) : null,
+    takenAt:
+      date && !Number.isNaN(date.getTime())
+        ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T` +
+          `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+        : null,
+  }
+}
+
+// En bildruta en sekund in (eller mitt i korta filmer), så att den inte blir svart.
+// ffmpeg vänder bildrutan enligt filmens rotation.
+async function videoFrame(file: string, at: number): Promise<Buffer> {
+  const { stdout } = await run(
+    ffmpegPath!,
+    ['-hide_banner', '-loglevel', 'error', '-ss', String(at), '-i', file]
+      .concat(['-map', '0:v:0', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', '-']),
+    { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 },
+  )
+  if (!stdout.length) throw new Error('ffmpeg gav ingen bildruta')
+  return stdout
+}
+
+async function decodeVideo(file: string) {
+  if (!ffmpegPath || !existsSync(ffmpegPath)) {
+    throw new Error('ffmpeg saknas. Kör npm install-scripts approve ffmpeg-static och sedan npm install.')
+  }
+  const video = await probeVideo(file)
+  const frame = await videoFrame(file, Math.min(1, (video.durationSeconds ?? 0) / 2))
+  return { decoded: await decodeWithSharp(frame), tags: null, video }
+}
+
 async function parseTags(data: Buffer) {
   return exifr.parse(data, { iptc: true, xmp: true, reviveValues: false, mergeOutput: true }).catch(() => null)
 }
 
 // Filerna läses hela. exifr lämnar annars filhandtag öppna, vilket är ett fel i Node 26.
-async function decode(source: Source) {
-  const data = await fs.readFile(source.file)
+async function decode(source: Source): Promise<{ decoded: Decoded; tags: any; video?: VideoInfo }> {
   const ext = extension(source.file)
+  if (VIDEO_EXTENSIONS.has(ext)) return decodeVideo(source.file)
+  const data = await fs.readFile(source.file)
   const companion = source.alternates[0] ? await fs.readFile(source.alternates[0].file) : null
   const tags = (await parseTags(data)) ?? (companion ? await parseTags(companion) : null)
 
@@ -262,7 +320,7 @@ function testRights(n: number) {
 async function makeRecord(source: Source, id: string, n: number): Promise<ImageRecord> {
   const times = await Promise.all([source, ...source.alternates].map(async (s) => (await fs.stat(s.file)).mtimeMs))
   const sourceTime = Math.max(...times)
-  const { decoded, tags } = await decode(source)
+  const { decoded, tags, video } = await decode(source)
   const outputs: [string, number, number][] = [
     [path.join(ROOT, thumbPath(id)), THUMB_SIZE, 75],
     [path.join(ROOT, previewPath(id)), PREVIEW_SIZE, 82],
@@ -279,10 +337,11 @@ async function makeRecord(source: Source, id: string, n: number): Promise<ImageR
     ...testRights(n),
     width: decoded.width,
     height: decoded.height,
-    takenAt: exifDate(tags?.DateTimeOriginal) ?? exifDate(tags?.CreateDate),
+    takenAt: video?.takenAt ?? exifDate(tags?.DateTimeOriginal) ?? exifDate(tags?.CreateDate),
     tags: list(tags?.Keywords ?? tags?.subject),
     description: text(tags?.Caption) || text(tags?.ImageDescription) || text(tags?.description),
     alternates: source.alternates.map((alternate) => alternate.path),
+    durationSeconds: video?.durationSeconds ?? null,
   }
 }
 

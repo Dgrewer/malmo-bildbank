@@ -44,7 +44,8 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
   "takenAt": "2012-04-26T17:19:36",
   "tags": ["CML", "Hongkong", "Stadsvandring"],
   "description": "En delegation från Hong Kong gick igår stadsvandring i Malmö",
-  "alternates": []
+  "alternates": [],
+  "durationSeconds": null
 }
 ```
 
@@ -64,6 +65,8 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `description` | sträng | Bildtext. Tom sträng om den saknas. Radbrytningar är `\n`. |
 | `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
 
+| `durationSeconds` | tal eller `null` | Längd i sekunder för video, `null` för bilder. För video är `width` och `height` filmens bildstorlek och `takenAt` inspelningstiden. Appen läser äldre index utan fältet som `null`. |
+
 `path` och `alternates` kan ha vilken filändelse som helst: jpg, png, tif, heic, cr2, nef osv. Appen visar formatet utifrån filändelsen och läser aldrig originalen för att visa dem, bara miniatyrerna och förhandsbilderna.
 
 Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade datum är `null`.
@@ -79,4 +82,5 @@ Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade dat
 - JPG, PNG, TIFF, WebP och GIF läses med sharp, och HEIC/HEIF avkodas med heic-decode.
 - RAW-filer (cr2, cr3, nef, arw, dng) avkodas inte. En JPG med samma namn i samma mapp blir förhandsbild, och paret blir en post. Finns ingen sådan JPG används den största JPG som är inbäddad i RAW-filen. `width` och `height` är då förhandsbildens storlek, som kan vara mindre än sensorns.
 - En JPG som får en RAW-fil bredvid sig behåller sitt id. Posten flyttas bara till RAW-filen.
-- Filer som inte är bilder, och RAW-filer utan förhandsbild, hoppas över med en varning.
+- Video (mp4, mov, m4v) kräver ffmpeg från paketet `ffmpeg-static`. En bildruta en sekund in blir miniatyr och förhandsbild, och längd och inspelningstid läses ur filen.
+- Filer som varken är bilder eller video, och RAW-filer utan förhandsbild, hoppas över med en varning.

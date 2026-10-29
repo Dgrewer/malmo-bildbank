@@ -15,7 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
-import { fileFormat, fileName } from '../src/catalog/fileFormat.ts'
+import { fileFormat, fileName, formatDuration, isVideo } from '../src/catalog/fileFormat.ts'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
@@ -268,7 +268,7 @@ try {
       if (!Array.isArray(index.images) || index.images.length === 0) return ['images saknas']
 
       const ids = new Set<string>()
-      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'alternates']
+      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'alternates', 'durationSeconds']
         .concat(['width', 'height', 'takenAt', 'tags', 'description'])
       for (const image of index.images) {
         const where = image.id ?? JSON.stringify(image).slice(0, 40)
@@ -348,12 +348,14 @@ try {
     { name: 'bild utan anmärkningar', index: find((i) => !i.blocked && !rightsExpired(i) && i.consent !== 'missing') },
     { name: 'RAW med JPG visar båda formaten', index: find((i) => isRaw(i) && i.alternates.length > 0) },
     { name: 'RAW med inbäddad förhandsbild', index: find((i) => isRaw(i) && i.alternates.length === 0) },
+    { name: 'video visas som stillbild med längd', index: find((i) => isVideo(i.path)) },
   ]
   // Varje varning ska synas om och endast om bildens data kräver det.
   const warnings = (image: ImageRecord): [string, boolean][] => [
     ['Spärrad. Bilden får inte användas', image.blocked],
     ['Rättigheterna gick ut', rightsExpired(image)],
     ['Samtycke saknas från personerna på bilden', image.consent === 'missing'],
+    ['Videon kan inte spelas upp i bildbanken', isVideo(image.path)],
   ]
 
   let detailPage: Page | null = null
@@ -366,6 +368,17 @@ try {
       }
       const page = detailPage
       const image = index.images[testCase.index]
+      // Rutnätet är virtuellt: scrolla tills rutan har ritats.
+      await page.waitForFunction(
+        (n) => {
+          const cell = document.querySelector(`.gallery-cell[data-index="${n}"]`)
+          if (cell) return true
+          document.querySelector('.gallery')!.scrollTop += 200
+          return false
+        },
+        { timeout: 10_000, polling: 50 },
+        testCase.index,
+      )
       await page.locator(`.gallery-cell[data-index="${testCase.index}"]`).click()
       await page.waitForFunction(
         () => {
@@ -383,6 +396,7 @@ try {
       })
       const rights = image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'
       const formats = [image.path, ...image.alternates].map((file) => `${fileFormat(file)} ${fileName(file)}`)
+      if (image.durationSeconds !== null) formats.push(formatDuration(image.durationSeconds))
       for (const value of [image.id, image.photographer, image.byline, image.terms, rights, ...formats]) {
         assert(detail.text.includes(value), `Detaljvyn saknar "${value}"`)
       }

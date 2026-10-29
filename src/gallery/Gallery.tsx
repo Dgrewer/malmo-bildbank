@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
+import { formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
@@ -83,11 +84,16 @@ function Thumbnail({ index, image, thumbs, left, top, size, onOpen }: ThumbnailP
       data-index={index}
       style={{ transform: `translate(${left}px, ${top}px)`, width: size, height: size }}
       onClick={() => onOpen(index)}
-      aria-label={`${image.id}, foto ${image.photographer}${image.blocked ? ', spärrad' : ''}`}
+      aria-label={`${image.id}, ${isVideo(image.path) ? 'video' : 'foto'} ${image.photographer}${image.blocked ? ', spärrad' : ''}`}
     >
       {thumb.status === 'ready' && <img src={thumb.url} alt="" draggable={false} />}
       {thumb.status === 'missing' && <span className="thumb-missing">Miniatyr saknas</span>}
       {image.blocked && <span className="badge-blocked">Spärrad</span>}
+      {isVideo(image.path) && (
+        <span className="badge-video">
+          Video{image.durationSeconds !== null && ` · ${formatDuration(image.durationSeconds)}`}
+        </span>
+      )}
     </button>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { fileFormat, fileName } from '../catalog/fileFormat.ts'
+import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
@@ -51,6 +51,9 @@ export function DetailView({ image, previews, onClose }: Props) {
             Rättigheterna gick ut {formatDate(image.rightsUntil!)}. Bilden får inte användas.
           </p>
         )}
+        {isVideo(image.path) && (
+          <p className="note">Videon kan inte spelas upp i bildbanken. Bilden är en stillbild ur filmen.</p>
+        )}
         {image.consent === 'missing' && (
           <p className="warning" role="alert">
             Samtycke saknas från personerna på bilden. Kontrollera innan bilden används.
@@ -62,6 +65,12 @@ export function DetailView({ image, previews, onClose }: Props) {
           <dd>
             <span className="file-format">{fileFormat(image.path)}</span> {fileName(image.path)}
           </dd>
+          {image.durationSeconds !== null && (
+            <>
+              <dt>Längd</dt>
+              <dd>{formatDuration(image.durationSeconds)}</dd>
+            </>
+          )}
           {image.alternates.length > 0 && (
             <>
               <dt>Även som</dt>
