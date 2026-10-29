@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:e2e": "node tests/e2e.ts"
+    "test:e2e": "node tests/e2e.ts",
+    "make-testdata": "node scripts/make-testdata.ts"
   },
   "dependencies": {
     "react": "^19.3.1",

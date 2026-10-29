@@ -180,6 +180,58 @@ try {
     const html = await fs.readFile(path.join(outDir, 'index.html'), 'utf8')
     assert(html.includes(`content="default-src 'self';`), 'CSP saknas i bygget')
   })
+
+  console.log('3.3 Testdata')
+
+  await test('3.3 index.json, miniatyrer och förhandsbilder går att läsa i webbläsaren', async () => {
+    const page = await openPage('/?testdata')
+    await page.waitForSelector('.topbar', { timeout: 30_000 })
+    const errors = await page.evaluate(async () => {
+      const errors: string[] = []
+      const root = await (window as unknown as { __bildbankTestFolder: Promise<FileSystemDirectoryHandle> })
+        .__bildbankTestFolder
+      const appData = await root.getDirectoryHandle('app-data')
+      const index = JSON.parse(await (await (await appData.getFileHandle('index.json')).getFile()).text())
+      if (index.version !== 1) errors.push(`version är ${index.version}`)
+      if (!Array.isArray(index.images) || index.images.length === 0) return ['images saknas']
+
+      const ids = new Set<string>()
+      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked']
+        .concat(['width', 'height', 'takenAt', 'tags', 'description'])
+      for (const image of index.images) {
+        const where = image.id ?? JSON.stringify(image).slice(0, 40)
+        const missing = fields.filter((field) => !(field in image))
+        if (missing.length) errors.push(`${where} saknar ${missing.join(', ')}`)
+        if (!/^MB-\d{6}$/.test(image.id)) errors.push(`${where}: felaktigt id`)
+        if (ids.has(image.id)) errors.push(`${where}: id finns två gånger`)
+        ids.add(image.id)
+        if (image.path !== image.path.normalize('NFC') || image.path.includes('\\')) {
+          errors.push(`${where}: sökvägen är inte NFC med /`)
+        }
+        if (!image.path.startsWith(`original/${image.photographer}/`)) errors.push(`${where}: fel fotograf i sökvägen`)
+        if (!['given', 'missing', 'not-required'].includes(image.consent)) errors.push(`${where}: consent`)
+        if (image.rightsUntil !== null && !/^\d{4}-\d{2}-\d{2}$/.test(image.rightsUntil)) {
+          errors.push(`${where}: rightsUntil`)
+        }
+        if (typeof image.blocked !== 'boolean' || !Array.isArray(image.tags)) errors.push(`${where}: typer`)
+
+        for (const [folder, size] of [['thumbs', 400], ['previews', 1600]] as const) {
+          const file = await (await (await appData.getDirectoryHandle(folder)).getFileHandle(`${image.id}.webp`))
+            .getFile()
+          const bitmap = await createImageBitmap(file)
+          const longest = Math.max(bitmap.width, bitmap.height)
+          const expected = Math.min(size, Math.max(image.width, image.height))
+          if (Math.abs(longest - expected) > 1) errors.push(`${where} ${folder}: ${longest} px, väntade ${expected}`)
+          const landscape = image.width >= image.height
+          if (bitmap.width >= bitmap.height !== landscape) errors.push(`${where} ${folder}: fel orientering`)
+          bitmap.close()
+        }
+      }
+      return errors
+    })
+    assert(errors.length === 0, errors.join('\n      '))
+    await page.close()
+  })
 } finally {
   await browser.close()
   await server.close()
