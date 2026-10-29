@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { fileFormat, fileName } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
@@ -57,6 +58,20 @@ export function DetailView({ image, previews, onClose }: Props) {
         )}
 
         <dl className="detail-fields">
+          <dt>Original</dt>
+          <dd>
+            <span className="file-format">{fileFormat(image.path)}</span> {fileName(image.path)}
+          </dd>
+          {image.alternates.length > 0 && (
+            <>
+              <dt>Även som</dt>
+              {image.alternates.map((alternate) => (
+                <dd key={alternate}>
+                  <span className="file-format">{fileFormat(alternate)}</span> {fileName(alternate)}
+                </dd>
+              ))}
+            </>
+          )}
           <dt>Fotograf</dt>
           <dd>{image.photographer}</dd>
           <dt>Byline</dt>

@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
+import { fileFormat, fileName } from '../src/catalog/fileFormat.ts'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
@@ -267,7 +268,7 @@ try {
       if (!Array.isArray(index.images) || index.images.length === 0) return ['images saknas']
 
       const ids = new Set<string>()
-      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked']
+      const fields = ['id', 'path', 'photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'alternates']
         .concat(['width', 'height', 'takenAt', 'tags', 'description'])
       for (const image of index.images) {
         const where = image.id ?? JSON.stringify(image).slice(0, 40)
@@ -339,25 +340,21 @@ try {
 
   const index: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
   const find = (match: (image: ImageRecord) => boolean) => index.images.findIndex(match)
+  const isRaw = (i: ImageRecord) => fileFormat(i.path).startsWith('RAW')
   const cases = [
-    { name: 'spärrad bild', index: find((i) => i.blocked), expect: ['Spärrad.', 'Bilden får inte användas'] },
-    {
-      name: 'utgångna rättigheter',
-      index: find((i) => rightsExpired(i) && !i.blocked),
-      expect: ['Rättigheterna gick ut'],
-    },
-    {
-      name: 'samtycke saknas',
-      index: find((i) => i.consent === 'missing' && !i.blocked && !rightsExpired(i)),
-      expect: ['Samtycke saknas från personerna på bilden'],
-    },
-    {
-      name: 'bild utan anmärkningar',
-      index: find((i) => !i.blocked && !rightsExpired(i) && i.consent !== 'missing'),
-      expect: [],
-    },
+    { name: 'spärrad bild', index: find((i) => i.blocked) },
+    { name: 'utgångna rättigheter', index: find((i) => rightsExpired(i) && !i.blocked) },
+    { name: 'samtycke saknas', index: find((i) => i.consent === 'missing' && !i.blocked && !rightsExpired(i)) },
+    { name: 'bild utan anmärkningar', index: find((i) => !i.blocked && !rightsExpired(i) && i.consent !== 'missing') },
+    { name: 'RAW med JPG visar båda formaten', index: find((i) => isRaw(i) && i.alternates.length > 0) },
+    { name: 'RAW med inbäddad förhandsbild', index: find((i) => isRaw(i) && i.alternates.length === 0) },
   ]
-  const WARNINGS = ['Spärrad.', 'Rättigheterna gick ut', 'Samtycke saknas']
+  // Varje varning ska synas om och endast om bildens data kräver det.
+  const warnings = (image: ImageRecord): [string, boolean][] => [
+    ['Spärrad. Bilden får inte användas', image.blocked],
+    ['Rättigheterna gick ut', rightsExpired(image)],
+    ['Samtycke saknas från personerna på bilden', image.consent === 'missing'],
+  ]
 
   let detailPage: Page | null = null
   for (const testCase of cases) {
@@ -385,11 +382,12 @@ try {
         return { text: dialog.innerText, width: preview.naturalWidth, height: preview.naturalHeight }
       })
       const rights = image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'
-      for (const value of [image.id, image.photographer, image.byline, image.terms, rights, ...testCase.expect]) {
+      const formats = [image.path, ...image.alternates].map((file) => `${fileFormat(file)} ${fileName(file)}`)
+      for (const value of [image.id, image.photographer, image.byline, image.terms, rights, ...formats]) {
         assert(detail.text.includes(value), `Detaljvyn saknar "${value}"`)
       }
-      for (const warning of WARNINGS.filter((w) => !testCase.expect.some((e) => e.startsWith(w)))) {
-        assert(!detail.text.includes(warning), `Detaljvyn visar "${warning}" i onödan`)
+      for (const [warning, shown] of warnings(image)) {
+        assert(detail.text.includes(warning) === shown, `Varningen "${warning}" ${shown ? 'saknas' : 'visas i onödan'}`)
       }
       const expected = Math.min(1600, Math.max(image.width, image.height))
       assert(Math.max(detail.width, detail.height) === expected, `Förhandsbilden är ${detail.width}×${detail.height}`)

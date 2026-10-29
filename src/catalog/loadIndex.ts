@@ -19,5 +19,6 @@ export async function loadIndex(root: FileSystemDirectoryHandle): Promise<ImageR
       `Indexet har version ${index.version}, men appen kan bara läsa version ${INDEX_VERSION}. Uppdatera appen.`,
     )
   }
-  return index.images
+  // alternates kom till efter version 1 och saknas i äldre index.
+  return index.images.map((image) => ({ ...image, alternates: image.alternates ?? [] }))
 }

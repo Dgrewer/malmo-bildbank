@@ -240,6 +240,20 @@ button.primary {
   margin: 0;
 }
 
+.file-format {
+  display: inline-block;
+  padding: 0 0.4rem;
+  margin-right: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.detail-fields dd {
+  overflow-wrap: anywhere;
+}
+
 .detail-fields .expired {
   color: var(--error-text);
   font-weight: 600;

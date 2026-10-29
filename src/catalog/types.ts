@@ -26,6 +26,7 @@ export interface ImageRecord {
   takenAt: string | null
   tags: string[]
   description: string
+  alternates: string[]
 }
 
 export function formatId(n: number): string {

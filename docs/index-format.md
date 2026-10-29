@@ -43,7 +43,8 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
   "height": 2401,
   "takenAt": "2012-04-26T17:19:36",
   "tags": ["CML", "Hongkong", "Stadsvandring"],
-  "description": "En delegation från Hong Kong gick igår stadsvandring i Malmö"
+  "description": "En delegation från Hong Kong gick igår stadsvandring i Malmö",
+  "alternates": []
 }
 ```
 
@@ -61,6 +62,9 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `takenAt` | sträng eller `null` | När bilden togs, `ÅÅÅÅ-MM-DDTtt:mm:ss` i lokal tid utan tidszon, eftersom EXIF saknar tidszon. `null` om uppgiften saknas. |
 | `tags` | lista med strängar | Nyckelord. Inga dubbletter. |
 | `description` | sträng | Bildtext. Tom sträng om den saknas. Radbrytningar är `\n`. |
+| `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
+
+`path` och `alternates` kan ha vilken filändelse som helst: jpg, png, tif, heic, cr2, nef osv. Appen visar formatet utifrån filändelsen och läser aldrig originalen för att visa dem, bara miniatyrerna och förhandsbilderna.
 
 Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade datum är `null`.
 
@@ -72,4 +76,7 @@ Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade dat
 - `terms`, `rightsUntil`, `consent` och `blocked` finns inte i bildfilerna. Skriptet fyller i varierade testvärden så att alla varningar i appen förekommer.
 - Id:n behålls för sökvägar som redan finns i `index.json`. Nya bilder får nästa lediga nummer.
 - Miniatyrer och förhandsbilder skapas bara om de saknas eller är äldre än originalet. `-- --force` skapar om alla.
-- RAW-filer (cr2, cr3, nef, arw, dng) och HEIC/HEIF hoppas över med en varning, eftersom sharp inte kan läsa dem.
+- JPG, PNG, TIFF, WebP och GIF läses med sharp, och HEIC/HEIF avkodas med heic-decode.
+- RAW-filer (cr2, cr3, nef, arw, dng) avkodas inte. En JPG med samma namn i samma mapp blir förhandsbild, och paret blir en post. Finns ingen sådan JPG används den största JPG som är inbäddad i RAW-filen. `width` och `height` är då förhandsbildens storlek, som kan vara mindre än sensorns.
+- En JPG som får en RAW-fil bredvid sig behåller sitt id. Posten flyttas bara till RAW-filen.
+- Filer som inte är bilder, och RAW-filer utan förhandsbild, hoppas över med en varning.
