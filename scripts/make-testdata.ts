@@ -11,7 +11,7 @@
 // som pekar på ett id fortsätter att gälla.
 //
 // Format:
-// - JPG, PNG, TIFF, WebP och GIF läses med sharp.
+// - JPG (även .jfif), PNG, TIFF, WebP, AVIF och GIF läses med sharp.
 // - HEIC/HEIF avkodas med heic-decode.
 // - RAW (cr2, cr3, nef, arw, dng) avkodas inte. En JPG med samma namn i samma
 //   mapp blir förhandsbild, och paret blir en bild med RAW-filen som original
@@ -44,9 +44,11 @@ const PREVIEW_SIZE = 1600
 const CONCURRENCY = 4
 const force = process.argv.includes('--force')
 
-const SHARP_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'tif', 'tiff'])
+const SHARP_EXTENSIONS = new Set(['jpg', 'jpeg', 'jfif', 'png', 'webp', 'avif', 'gif', 'tif', 'tiff'])
 // JPG föredras som förhandsbild till en RAW-fil, i den här ordningen.
-const RAW_COMPANIONS = ['jpg', 'jpeg', 'tif', 'tiff', 'png', 'heic', 'heif']
+const RAW_COMPANIONS = ['jpg', 'jpeg', 'jfif', 'tif', 'tiff', 'png', 'heic', 'heif']
+// Systemfiler hoppas över utan varning.
+const SYSTEM_FILES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
 
 async function findDirectory(parent: string, name: string): Promise<string> {
   const entries = await fs.readdir(parent, { withFileTypes: true })
@@ -93,7 +95,7 @@ async function findSources(originalDir: string): Promise<Source[]> {
     const paired = new Set(companions.values())
 
     for (const name of names) {
-      if (paired.has(name)) continue
+      if (paired.has(name) || SYSTEM_FILES.has(name.toLowerCase())) continue
       const ext = extension(name)
       if (!SHARP_EXTENSIONS.has(ext) && !HEIC_EXTENSIONS.has(ext) && !RAW_EXTENSIONS.has(ext)) {
         console.warn(`  Hoppar över ${photographer}/${name}: inte en bildfil som stöds`)

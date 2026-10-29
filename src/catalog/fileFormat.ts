@@ -6,6 +6,8 @@ export const HEIC_EXTENSIONS = new Set(['heic', 'heif'])
 const NAMES: Record<string, string> = {
   jpg: 'JPG',
   jpeg: 'JPG',
+  jfif: 'JPG',
+  avif: 'AVIF',
   png: 'PNG',
   tif: 'TIFF',
   tiff: 'TIFF',
