@@ -4,6 +4,8 @@ export type ToWorker =
   | { type: 'scan'; bank: FileSystemDirectoryHandle; originals: FileSystemDirectoryHandle }
   | { type: 'import' }
   | { type: 'abort' }
+  // Svar på frame-request: en stillbild ur filmen, eller null om den inte gick att läsa.
+  | { type: 'frame'; requestId: number; bitmap: ImageBitmap | null }
 
 export type Phase = 'scan' | 'hash' | 'import' | 'save'
 
@@ -37,3 +39,5 @@ export type FromWorker =
   | { type: 'imported'; result: ImportResult }
   | { type: 'aborted'; phase: Phase; done: number; total: number }
   | { type: 'error'; message: string }
+  // Workern ber sidan ta en stillbild ur en film.
+  | { type: 'frame-request'; requestId: number; file: File }

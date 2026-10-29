@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { findDirectory } from '../fs/folder.ts'
 import { loadOriginalsFolder, saveOriginalsFolder } from '../fs/folderStore.ts'
 import type { FromWorker, ImportResult, Phase, ScanSummary, ToWorker } from '../import/protocol.ts'
+import { captureFrame } from '../import/videoFrame.ts'
 
 interface Props {
   // Bildbankens mapp, den som innehåller original och app-data.
@@ -73,7 +74,14 @@ export function AdminView({ bank, onClose }: Props) {
     const instance = new Worker(new URL('../import/worker.ts', import.meta.url), { type: 'module' })
     instance.onmessage = (event: MessageEvent<FromWorker>) => {
       const message = event.data
-      if (message.type === 'progress') {
+      if (message.type === 'frame-request') {
+        captureFrame(message.file).then((bitmap) =>
+          instance.postMessage(
+            { type: 'frame', requestId: message.requestId, bitmap } satisfies ToWorker,
+            bitmap ? [bitmap] : [],
+          ),
+        )
+      } else if (message.type === 'progress') {
         setState((current) => ({
           kind: 'running',
           phase: message.phase,

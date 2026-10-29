@@ -2,15 +2,24 @@
 // gränssnittet inte fryser. Mapphandtagen skickas hit från adminvyn.
 //
 //   scan    läser originalmappen, räknar fingeravtryck och jämför med indexet
-//   import  skapar poster för nya, ändrade och flyttade bilder och skriver indexet
+//   import  läser metadata, skapar miniatyrer och förhandsbilder och skriver indexet
 //   abort   avbryter efter den fil som håller på. Det som är klart sparas.
 
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
 import { idNumber, INDEX_VERSION, type IndexDuplicate, type ImageRecord, type IndexFile } from '../catalog/types.ts'
-import { ensureDirectory, readFile, writeIndexFile } from '../fs/folder.ts'
+import { ensureDirectory, readFile, removeFile, writeFile, writeIndexFile } from '../fs/folder.ts'
 import { combinedHash, quickHash } from './hash.ts'
+import {
+  decodeImage,
+  PREVIEW_SIZE,
+  PreviewProblem,
+  THUMB_SIZE,
+  toWebp,
+  VIDEO_UNREADABLE,
+  type Decoded,
+} from './images.ts'
 import { Journal, readJournal } from './journal.ts'
 import { readMetadata } from './metadata.ts'
 import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
@@ -24,6 +33,8 @@ interface HashedScannedFile extends ScannedFile {
 
 interface Session {
   bank: FileSystemDirectoryHandle
+  thumbs: FileSystemDirectoryHandle
+  previews: FileSystemDirectoryHandle
   plan: ImportPlan<HashedScannedFile>
   journal: Journal
   // Poster från en avbruten import, efter id.
@@ -74,6 +85,30 @@ async function breathe() {
   if (Date.now() - breathedAt < 50) return
   await new Promise((resolve) => setTimeout(resolve, 0))
   breathedAt = Date.now()
+}
+
+// Stillbilder ur filmer tas i sidans huvudtråd, eftersom en worker inte har
+// något video-element. Sidan svarar med en ImageBitmap, eller null om filmen
+// inte gick att läsa.
+type FrameAnswer = Extract<ToWorker, { type: 'frame' }>
+const frameRequests = new Map<number, (answer: FrameAnswer) => void>()
+let nextFrameRequest = 0
+
+async function videoFrame(file: File): Promise<Decoded> {
+  const requestId = nextFrameRequest++
+  const answer = await new Promise<FrameAnswer>((resolve) => {
+    frameRequests.set(requestId, resolve)
+    post({ type: 'frame-request', requestId, file })
+  })
+  frameRequests.delete(requestId)
+  if (!answer.bitmap) throw new PreviewProblem(VIDEO_UNREADABLE)
+  return { image: answer.bitmap, width: answer.bitmap.width, height: answer.bitmap.height }
+}
+
+async function names(directory: FileSystemDirectoryHandle): Promise<Set<string>> {
+  const result = new Set<string>()
+  for await (const name of directory.keys()) result.add(name)
+  return result
 }
 
 // Id:n för dubbletter som indexeringen tidigare flyttade bort får inte återanvändas.
@@ -132,7 +167,17 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     previous,
     lastId,
   )
-  session = { bank, plan, journal: new Journal(bank, journal), resumed, duplicates }
+  // En bild vars miniatyr eller förhandsbild saknas görs om, t.ex. efter en
+  // import som avbröts eller om någon har tagit bort filerna.
+  const thumbs = await ensureDirectory(bank, 'app-data/thumbs')
+  const previews = await ensureDirectory(bank, 'app-data/previews')
+  const [thumbNames, previewNames] = [await names(thumbs), await names(previews)]
+  for (const item of plan.items) {
+    const name = `${item.id}.webp`
+    const missing = !(thumbNames.has(name) && previewNames.has(name))
+    if (item.change === 'unchanged' && !item.previous?.previewProblem && missing) item.change = 'changed'
+  }
+  session = { bank, thumbs, previews, plan, journal: new Journal(bank, journal), resumed, duplicates }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -176,15 +221,16 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
   }
 }
 
-// Metadata läses för nya och ändrade filer. En flyttad fil har samma innehåll
-// och behåller sina uppgifter.
-async function makeRecord(item: PlanItem<HashedScannedFile>): Promise<ImageRecord> {
+// Metadata läses och bilder skapas för nya och ändrade filer. En flyttad fil
+// har samma innehåll och behåller sina uppgifter och bilder.
+async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): Promise<ImageRecord> {
   const record = baseRecord(item)
   if (item.change === 'moved') return record
   const file = await item.file.handle.getFile()
   if (isVideo(file.name)) {
     const video = await readVideoInfo(file)
-    return { ...record, byline: record.byline || `Foto: ${record.photographer}`, ...video }
+    const updated = { ...record, byline: record.byline || `Foto: ${record.photographer}`, ...video }
+    return withImages(current, updated, () => videoFrame(file))
   }
   const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
   // exifr läser annars bara början av filen. I TIFF och TIFF-baserade RAW-filer
@@ -192,15 +238,42 @@ async function makeRecord(item: PlanItem<HashedScannedFile>): Promise<ImageRecor
   const ext = extension(file.name)
   const whole = RAW_EXTENSIONS.has(ext) || TIFF_EXTENSIONS.has(ext)
   const metadata = await readMetadata(whole ? new Uint8Array(await file.arrayBuffer()) : file, companion)
-  return {
+  const updated = {
     ...record,
     byline: metadata.byline || `Foto: ${record.photographer}`,
     takenAt: metadata.takenAt,
     tags: metadata.tags,
     description: metadata.description,
-    width: metadata.width,
-    height: metadata.height,
   }
+  return withImages(current, updated, () => decodeImage(file, metadata.orientation, companion))
+}
+
+// Skapar miniatyr och förhandsbild. Storleken blir den avkodade bildens, efter
+// rotation. Går det inte kommer bilden ändå med, med en förklaring i previewProblem.
+async function withImages(current: Session, record: ImageRecord, decode: () => Promise<Decoded>): Promise<ImageRecord> {
+  const name = `${record.id}.webp`
+  try {
+    const decoded = await decode()
+    try {
+      await writeFile(current.thumbs, name, await toWebp(decoded, THUMB_SIZE, 0.75))
+      await writeFile(current.previews, name, await toWebp(decoded, PREVIEW_SIZE, 0.82))
+    } finally {
+      if (decoded.image instanceof ImageBitmap) decoded.image.close()
+    }
+    return { ...record, width: decoded.width, height: decoded.height, previewProblem: null }
+  } catch (error) {
+    await removeImages(current, record.id)
+    const problem =
+      error instanceof PreviewProblem
+        ? error.message
+        : `Förhandsbilden kunde inte skapas: ${error instanceof Error ? error.message : error}`
+    return { ...record, width: 0, height: 0, previewProblem: problem }
+  }
+}
+
+async function removeImages(current: Session, id: string) {
+  await removeFile(current.thumbs, `${id}.webp`)
+  await removeFile(current.previews, `${id}.webp`)
 }
 
 async function runImport(current: Session) {
@@ -211,7 +284,7 @@ async function runImport(current: Session) {
     for (const item of work) {
       await breathe()
       progress('import', records.size, work.length)
-      const record = await makeRecord(item)
+      const record = await makeRecord(current, item)
       records.set(item.id, record)
       await journal.add(record)
     }
@@ -233,6 +306,11 @@ async function runImport(current: Session) {
     ...current.duplicates,
     ...[...dropped].map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
   ]
+  // Bilder som inte finns kvar i bildbanken behöver inga miniatyrer.
+  const kept = new Set(images.map((image) => image.id))
+  for (const record of [...plan.removed, ...dropped.keys()]) {
+    if (!kept.has(record.id)) await removeImages(current, record.id)
+  }
   const index: IndexFile = {
     version: INDEX_VERSION,
     generatedAt: new Date().toISOString(),
@@ -253,6 +331,10 @@ async function runImport(current: Session) {
 async function handle(message: ToWorker) {
   if (message.type === 'abort') {
     aborted = true
+    return
+  }
+  if (message.type === 'frame') {
+    frameRequests.get(message.requestId)?.(message)
     return
   }
   aborted = false

@@ -8,9 +8,10 @@ export interface HashedFile {
   alternates: { path: string }[]
 }
 
-// new: ny bild. changed: samma sökväg men nytt innehåll, eller förra försöket
-// gav ingen förhandsbild. moved: samma innehåll på ny sökväg (flyttad eller
-// omdöpt). unchanged: inget att göra.
+// new: ny bild. changed: samma sökväg men nytt innehåll. moved: samma innehåll
+// på ny sökväg (flyttad eller omdöpt). unchanged: inget att göra. En fil som
+// inte gav någon förhandsbild görs inte om förrän den ändras, t.ex. när en JPG
+// läggs bredvid en RAW-fil.
 export type Change = 'new' | 'changed' | 'moved' | 'unchanged'
 
 export interface PlanItem<T extends HashedFile> {
@@ -63,14 +64,14 @@ export function buildPlan<T extends HashedFile>(files: T[], previous: ImageRecor
     const samePath = [file, ...file.alternates].map((part) => byPath.get(part.path)).find((record) => record && !used.has(record))
     if (sameContent && !used.has(sameContent)) {
       used.add(sameContent)
-      const change = sameContent.previewProblem ? 'changed' : sameContent.path === file.path ? 'unchanged' : 'moved'
+      const change = sameContent.path === file.path ? 'unchanged' : 'moved'
       items.push({ file, id: sameContent.id, change, previous: sameContent })
     } else if (samePath) {
       used.add(samePath)
       // Ett index från före fingeravtrycken saknar hash. Då räknas filen som oförändrad.
       const change =
         samePath.path !== file.path || (samePath.hash && samePath.hash !== file.hash) ? 'changed' : 'unchanged'
-      items.push({ file, id: samePath.id, change: samePath.previewProblem ? 'changed' : change, previous: samePath })
+      items.push({ file, id: samePath.id, change, previous: samePath })
     } else {
       items.push({ file, id: formatId(++lastId), change: 'new', previous: null })
     }

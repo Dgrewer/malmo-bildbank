@@ -31,6 +31,7 @@ import {
 import { combinedHash, quickHash } from '../src/import/hash.ts'
 import { readMetadata } from '../src/import/metadata.ts'
 import { readVideoInfo } from '../src/import/video.ts'
+import UTIF from 'utif2'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 
@@ -278,6 +279,76 @@ async function readPreview(page: Page) {
     ) as Record<string, string[]>
     return { counts, lists }
   })
+}
+
+// En TIFF på 300×200 med röd vänsterhalva och blå högerhalva, som base64.
+function tiffFixture(orientation: number): string {
+  const [width, height] = [300, 200]
+  const rgba = new Uint8Array(width * height * 4)
+  for (let n = 0; n < width * height; n++) {
+    const left = n % width < width / 2
+    rgba.set(left ? [220, 20, 20, 255] : [20, 20, 220, 255], n * 4)
+  }
+  const tiff = UTIF.encodeImage(rgba, width, height, { t274: [orientation] } as unknown as UTIF.IFD)
+  return Buffer.from(tiff).toString('base64')
+}
+
+// Bredd och höjd för miniatyrer och förhandsbilder i OPFS. Saknas en fil, eller
+// är den inte WebP, saknas bilden i svaret.
+async function imageSizes(page: Page, bank: string, ids: string[]) {
+  return page.evaluate(
+    async (bank, ids) => {
+      const appData = await (await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)).getDirectoryHandle('app-data')
+      const result: Record<string, { thumb: number[]; preview: number[] }> = {}
+      async function size(folder: string, id: string) {
+        const file = await (await (await appData.getDirectoryHandle(folder)).getFileHandle(`${id}.webp`)).getFile()
+        const header = new TextDecoder().decode(await file.slice(0, 12).arrayBuffer())
+        if (!header.startsWith('RIFF') || !header.endsWith('WEBP')) throw new Error('inte WebP')
+        const bitmap = await createImageBitmap(file)
+        const dimensions = [bitmap.width, bitmap.height]
+        bitmap.close()
+        return dimensions
+      }
+      for (const id of ids) {
+        try {
+          result[id] = { thumb: await size('thumbs', id), preview: await size('previews', id) }
+        } catch {
+          // Saknas i svaret.
+        }
+      }
+      return result
+    },
+    bank,
+    ids,
+  )
+}
+
+// Färgen i förhandsbildens vänstra och högra kant (plain) och övre och nedre kant (turned).
+async function previewColors(page: Page, bank: string, plain: string, turned: string) {
+  return page.evaluate(
+    async (bank, plain, turned) => {
+      const previews = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)).getDirectoryHandle('app-data')).getDirectoryHandle('previews')
+      async function colors(id: string, points: (w: number, h: number) => [number, number][]) {
+        const bitmap = await createImageBitmap(await (await previews.getFileHandle(`${id}.webp`)).getFile())
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+        const context = canvas.getContext('2d')!
+        context.drawImage(bitmap, 0, 0)
+        return points(bitmap.width, bitmap.height)
+          .map(([x, y]) => {
+            const [r, , b] = context.getImageData(x, y, 1, 1).data
+            return r > 150 && b < 100 ? 'röd' : b > 150 && r < 100 ? 'blå' : `rgb(${r},?,${b})`
+          })
+          .join(',')
+      }
+      return {
+        plain: await colors(plain, (w, h) => [[10, h / 2], [w - 10, h / 2]]),
+        turned: await colors(turned, (w, h) => [[w / 2, 10], [w / 2, h - 10]]),
+      }
+    },
+    bank,
+    plain,
+    turned,
+  )
 }
 
 const DUPLICATES_TITLE = 'Dubbletter med samma namn och tagningstid, togs inte med'
@@ -790,7 +861,10 @@ try {
   await test('4.1 importen skriver index med id och fingeravtryck', async () => {
     const page = importPage!
     await clickButton(page, 'Starta import')
-    await waitForText(page, 'Importen är klar', 120_000)
+    // Första importen skapar miniatyrer och förhandsbilder för alla bilder.
+    const started = Date.now()
+    await waitForText(page, 'Importen är klar', 900_000)
+    console.log(`      Första importen tog ${Math.round((Date.now() - started) / 1000)} s`)
     firstIndexText = (await readOpfs(page, `${bank}/app-data/index.json`))!
     firstIndex = JSON.parse(firstIndexText) as IndexFile
     const ids = firstIndex.images.map((image) => image.id)
@@ -816,14 +890,18 @@ try {
     assert(!(await readOpfs(page, `${bank}/app-data/import/pagaende.jsonl`)), 'pagaende.jsonl ligger kvar')
 
     await clickButton(page, 'Sök efter ändringar')
-    const { counts } = await waitForPreview(page)
-    assert(counts.unchanged === expected.kept.length && counts.new === 0, `Andra sökningen: ${JSON.stringify(counts)}`)
+    const { counts, lists } = await waitForPreview(page)
+    assert(
+      counts.unchanged === expected.kept.length && counts.new === 0,
+      `Andra sökningen: ${JSON.stringify(counts)} ${lists['Ändrade'] ?? ''}`,
+    )
     const skippedAgain = (await readPreview(page)).lists[DUPLICATES_TITLE] ?? []
     assert(skippedAgain.length === expected.dropped.length, 'Bortvalda dubbletter visas inte vid nästa sökning')
   })
 
   await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {
-    const fields = ['byline', 'takenAt', 'tags', 'description', 'width', 'height', 'durationSeconds'] as const
+    // Storleken kommer från den avkodade bilden och kontrolleras i 4.3.
+    const fields = ['byline', 'takenAt', 'tags', 'description', 'durationSeconds'] as const
     const differences: string[] = []
     for (const wanted of expected.kept) {
       const actual = firstIndex!.images.find((image) => image.path === wanted.path)
@@ -848,18 +926,81 @@ try {
     }
   })
 
+  await test('4.3 miniatyrer och förhandsbilder skapas som WebP i rätt storlek', async () => {
+    const page = importPage!
+    const images = firstIndex!.images.filter((image) => !image.previewProblem)
+    const sizes = await imageSizes(page, bank, images.map((image) => image.id))
+    const wrong: string[] = []
+    for (const image of images) {
+      const size = sizes[image.id]
+      if (!size) {
+        wrong.push(`${image.path}: miniatyr eller förhandsbild saknas eller är inte WebP`)
+        continue
+      }
+      const longest = Math.max(image.width, image.height)
+      const [thumbLongest, previewLongest] = [Math.max(...size.thumb), Math.max(...size.preview)]
+      if (Math.abs(thumbLongest - Math.min(400, longest)) > 1) wrong.push(`${image.path}: miniatyren är ${size.thumb.join('×')}`)
+      if (Math.abs(previewLongest - Math.min(1600, longest)) > 1) wrong.push(`${image.path}: förhandsbilden är ${size.preview.join('×')}`)
+      const ratio = image.width / image.height
+      if (Math.abs(size.preview[0] / size.preview[1] - ratio) > 0.02 * ratio) {
+        wrong.push(`${image.path}: förhandsbilden ${size.preview.join('×')} har inte formatet ${image.width}×${image.height}`)
+      }
+    }
+    assert(!wrong.length, wrong.slice(0, 5).join('\n      '))
+
+    // Storlek och rotation jämförs med vad sharp gav i testdata/app-data.
+    const old: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
+    for (const before of old.images.filter((image) => !image.previewProblem)) {
+      const now = firstIndex!.images.find((image) => image.path === before.path)
+      if (!now) continue
+      assert(
+        now.width === before.width && now.height === before.height,
+        `${before.path} är ${now.width}×${now.height}, sharp gav ${before.width}×${before.height}`,
+      )
+    }
+
+    const broken = firstIndex!.images.find((image) => image.path.endsWith('/Trasig.DNG'))
+    assert(broken?.previewProblem?.startsWith('RAW-filen saknar förhandsbild'), `Trasig.DNG: ${broken?.previewProblem}`)
+    assert(!(await readOpfs(page, `${bank}/app-data/thumbs/${broken!.id}.webp`)), 'Trasig.DNG har en miniatyr')
+    const video = firstIndex!.images.find((image) => image.durationSeconds)
+    assert(video && !video.previewProblem && video.width > 0, `Filmen fick ingen stillbild: ${video?.previewProblem}`)
+  })
+
+  await test('4.3 TIFF läses och vrids enligt EXIF', async () => {
+    const page = importPage!
+    await opfs(page, bank, 'original/Fotograf C/Testbild.tif', 'write', tiffFixture(1), '')
+    await opfs(page, bank, 'original/Fotograf C/Roterad.tif', 'write', tiffFixture(6), '')
+    await clickButton(page, 'Sök igen')
+    const { counts } = await waitForPreview(page)
+    assert(counts.new === 2, `TIFF-filerna räknas inte som nya: ${JSON.stringify(counts)}`)
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'Importen är klar', 120_000)
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const plain = index.images.find((image) => image.path.endsWith('/Testbild.tif'))!
+    const turned = index.images.find((image) => image.path.endsWith('/Roterad.tif'))!
+    assert(!plain.previewProblem && !turned.previewProblem, `${plain.previewProblem ?? turned.previewProblem}`)
+    assert(plain.width === 300 && plain.height === 200, `Testbild.tif är ${plain.width}×${plain.height}`)
+    assert(turned.width === 200 && turned.height === 300, `Roterad.tif är ${turned.width}×${turned.height}`)
+    // Vänster halva är röd. Efter 90 graders vridning medurs hamnar den överst.
+    const colors = await previewColors(page, bank, plain.id, turned.id)
+    assert(colors.plain === 'röd,blå', `Testbild.tif har ${colors.plain} i vänster och höger kant`)
+    assert(colors.turned === 'röd,blå', `Roterad.tif har ${colors.turned} överst och nederst`)
+    firstIndex = index
+  })
+
   await test('4.1 flyttade och omdöpta filer behåller sitt id', async () => {
     const page = importPage!
     const [moved, renamed] = [pick(firstIndex!, 'Fotograf A'), pick(firstIndex!, 'Fotograf B')]
     await opfsMove(page, bank, moved.path, 'original/Fotograf C/Flyttad hit.jpg')
     await opfsMove(page, bank, renamed.path, renamed.path.replace(/[^/]+$/, 'Nytt namn.jpg'))
-    await clickButton(page, 'Sök igen')
+    await clickButton(page, 'Sök efter ändringar')
     const { counts, lists } = await waitForPreview(page)
     assert(counts.moved === 2 && counts.new === 0 && counts.removed === 0, `Efter flytt: ${JSON.stringify(counts)}`)
     assert(
       (lists['Flyttade eller omdöpta, behåller sitt id'] ?? []).includes(`${moved.path} → original/Fotograf C/Flyttad hit.jpg`),
       'Flytten visas inte som från → till',
     )
+    const before = await readOpfs(page, `${bank}/app-data/index.json`)
     await clickButton(page, 'Starta import')
     await waitForText(page, 'Importen är klar', 120_000)
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
@@ -868,7 +1009,7 @@ try {
     assert(byId.get(moved.id)?.photographer === 'Fotograf C', 'Fotografen följer inte med flytten')
     assert(byId.get(renamed.id)?.path.endsWith('/Nytt namn.jpg'), 'Den omdöpta bilden bytte id')
     assert(index.images.length === firstIndex!.images.length, 'Antalet bilder ändrades')
-    assert((await readOpfs(page, `${bank}/app-data/index.prev.json`)) === firstIndexText, 'index.prev.json är inte förra versionen')
+    assert((await readOpfs(page, `${bank}/app-data/index.prev.json`)) === before, 'index.prev.json är inte förra versionen')
     firstIndex = index
   })
 
@@ -943,7 +1084,7 @@ try {
     const id = `MB-${String(firstIndex!.lastId! + 1).padStart(6, '0')}`
     // Som om en import avbröts efter att den här bilden blev klar.
     await page.evaluate(
-      async (bank, path, id) => {
+      async (bank, path, id, sourceId) => {
         const hashModule = '/src/import/hash.ts'
         const { quickHash }: typeof import('../src/import/hash.ts') = await import(hashModule)
         const opfs = await navigator.storage.getDirectory()
@@ -955,10 +1096,20 @@ try {
         const writable = await (await imports.getFileHandle('pagaende.jsonl', { create: true })).createWritable()
         await writable.write(JSON.stringify(record) + '\n{"trasig')
         await writable.close()
+        // Miniatyr och förhandsbild blev också klara före avbrottet.
+        const appData = await (await opfs.getDirectoryHandle(bank)).getDirectoryHandle('app-data')
+        for (const folder of ['thumbs', 'previews']) {
+          const target = await appData.getDirectoryHandle(folder)
+          const image = await (await target.getFileHandle(`${sourceId}.webp`)).getFile()
+          const copy = await (await target.getFileHandle(`${id}.webp`, { create: true })).createWritable()
+          await copy.write(image)
+          await copy.close()
+        }
       },
       bank,
       path,
       id,
+      source.id,
     )
     await clickButton(page, 'Sök efter ändringar')
     const { counts } = await waitForPreview(page)

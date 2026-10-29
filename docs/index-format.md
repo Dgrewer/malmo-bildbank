@@ -93,6 +93,9 @@ Importen körs i appen, under Importera. Originalmappen väljs per dator, och ka
 - Metadata läses med exifr ur EXIF, IPTC och XMP för nya och ändrade filer: byline (IPTC Byline, EXIF Artist eller XMP creator, annars `Foto: <fotograf>`), tagningstid, nyckelord, bildtext och storlek. IPTC-text som är UTF-8 men lästs som Latin-1 ("MalmÃ¶") avkodas om. Texter som kameror skriver in automatiskt, t.ex. "OLYMPUS DIGITAL CAMERA", tas bort. Saknar en RAW-fil metadata används JPG:en bredvid den.
 - För film läses längd och inspelningstid ur filens mvhd-box. Tiden är i UTC i filen och lagras som lokal tid.
 - Nya bilder får `consent: "not-required"`, tomma villkor och inget slutdatum.
+- Miniatyrer (400 px) och förhandsbilder (1600 px) skapas som WebP i webbläsaren, i en Web Worker med OffscreenCanvas. JPG, PNG, WebP, AVIF och GIF avkodas av webbläsaren, som också vänder dem enligt EXIF. TIFF avkodas med utif2 och HEIC med libheif-js (WebAssembly som ingår i appen). RAW-filer får förhandsbild från JPG:en bredvid, annars från den största inbäddade JPG:en, vriden enligt RAW-filens orientering. En stillbild ur en film tas av sidans huvudtråd med ett video-element, eftersom en worker saknar ett sådant. `width` och `height` är den avkodade bildens storlek efter rotation.
+- Saknas en bilds miniatyr eller förhandsbild görs de om vid nästa import. En fil som inte gav någon förhandsbild (`previewProblem`) görs inte om förrän den ändras.
+- Miniatyrer och förhandsbilder för bilder som tas bort ur indexet raderas.
 - Bilder vars fil inte finns kvar tas bort ur indexet. Deras id delas inte ut igen.
 - Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.

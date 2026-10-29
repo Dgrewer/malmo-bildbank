@@ -59,6 +59,24 @@ function number(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : 0
 }
 
+// exifr översätter EXIF-orienteringen till text, t.ex. "Rotate 90 CW". Här
+// översätts den tillbaka till EXIF-värdet 1–8.
+const ORIENTATIONS = [
+  'Horizontal (normal)',
+  'Mirror horizontal',
+  'Rotate 180',
+  'Mirror vertical',
+  'Mirror horizontal and rotate 270 CW',
+  'Rotate 90 CW',
+  'Mirror horizontal and rotate 90 CW',
+  'Rotate 270 CW',
+]
+
+function orientationValue(value: unknown): number | null {
+  if (typeof value === 'string') return ORIENTATIONS.indexOf(value) + 1 || null
+  return number(value) || null
+}
+
 // I webbläsaren en Blob, så att exifr bara läser början av filen. I Node (testerna) byte-data.
 type Source = Blob | Uint8Array
 
@@ -74,7 +92,7 @@ async function parse(file: Source): Promise<Tags | null> {
 // exifr inte kan läsa, används JPG:en bredvid den.
 export async function readMetadata(file: Source, companion?: Source): Promise<Metadata> {
   const tags = (await parse(file)) ?? (companion ? await parse(companion) : null) ?? {}
-  const orientation = number(tags.Orientation) || null
+  const orientation = orientationValue(tags.Orientation)
   let width = number(tags.ExifImageWidth) || number(tags.PixelXDimension) || number(tags.ImageWidth)
   let height = number(tags.ExifImageHeight) || number(tags.PixelYDimension) || number(tags.ImageHeight)
   // Orientering 5–8 betyder att bilden ska vridas 90 grader.
