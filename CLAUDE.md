@@ -28,6 +28,7 @@ app-data/
   previews/                 Förhandsvisningar
   models/                   Modeller för Transformers.js
   edits/                    Taggningar och rättigheter, en fil per användare
+  dubbletter/               Bortflyttade dubbletter och loggen flyttade.jsonl
 ```
 
 Indexformatet beskrivs i `docs/index-format.md`.
@@ -54,6 +55,13 @@ Indexformatet beskrivs i `docs/index-format.md`.
 - En RAW-fil och en JPG med samma namn är samma bild. Paret visas som en bild i galleriet, RAW-filen är originalet och JPG:en ligger i `alternates`.
 - Video (mp4, mov, m4v) visas men spelas inte upp. ffmpeg tar ut en stillbild ur filmen som miniatyr och förhandsbild. Rutnätet märker filmerna med "Video" och längden.
 - Chrome och Edge kan inte visa HEIC eller RAW, så appen visar alltid miniatyrer och förhandsbilder i WebP, aldrig originalen.
+
+## Dubbletter
+
+- Två filer är dubbletter om de har samma filnamn (i valfri fotografmapp, utan hänsyn till versaler) och samma tagningstid när båda har en.
+- Den med högst upplösning behålls. Vid lika upplösning behålls den som indexerades först (lägst id), så att taggningar och rättigheter finns kvar.
+- Indexeringen raderar inte dubbletter. Den flyttar dem till `app-data/dubbletter/` med samma sökväg som i `original/` och loggar varje flytt i `app-data/dubbletter/flyttade.jsonl`, så att det går att ångra. Mappen töms för hand.
+- En flyttad dubbletts id återanvänds aldrig.
 
 ## Nedladdning
 

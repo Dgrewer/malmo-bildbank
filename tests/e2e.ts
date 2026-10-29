@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
 import { build, createServer } from 'vite'
+import { findDuplicates } from '../src/catalog/duplicates.ts'
 import { fileFormat, fileName, formatDuration, isVideo } from '../src/catalog/fileFormat.ts'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
@@ -303,6 +304,61 @@ try {
     })
     assert(errors.length === 0, errors.join('\n      '))
     await page.close()
+  })
+
+  console.log('Dubbletter')
+
+  const record = (id: string, folder: string, width: number, takenAt: string | null = null): ImageRecord => ({
+    id,
+    path: `original/${folder}/IMG_0001.jpg`,
+    photographer: folder,
+    byline: '',
+    terms: '',
+    rightsUntil: null,
+    consent: 'given',
+    blocked: false,
+    width,
+    height: width,
+    takenAt,
+    tags: [],
+    description: '',
+    alternates: [],
+    durationSeconds: null,
+  })
+
+  await test('Dubbletter: den med högst upplösning behålls', async () => {
+    const [small, large] = [record('MB-000001', 'A', 1000), record('MB-000002', 'B', 4000)]
+    const duplicates = findDuplicates([small, large])
+    assert(duplicates.get(small) === large && !duplicates.has(large), 'Fel bild behölls')
+  })
+
+  await test('Dubbletter: vid lika upplösning behålls lägst id', async () => {
+    const [first, second] = [record('MB-000001', 'A', 2000), record('MB-000002', 'B', 2000)]
+    const duplicates = findDuplicates([second, first])
+    assert(duplicates.get(second) === first && duplicates.size === 1, 'Fel bild behölls')
+  })
+
+  await test('Dubbletter: samma namn men olika tagningstid är olika bilder', async () => {
+    const images = [
+      record('MB-000001', 'A', 2000, '2024-01-01T10:00:00'),
+      record('MB-000002', 'B', 1000, '2025-06-01T12:00:00'),
+      record('MB-000003', 'C', 500, null),
+    ]
+    const duplicates = findDuplicates(images)
+    assert(duplicates.size === 1 && duplicates.get(images[2]) === images[0], 'Olika tagningstid räknades som dubblett')
+  })
+
+  await test('Dubbletter: indexet saknar dubbletter och de flyttade filerna finns kvar', async () => {
+    const current: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
+    assert(findDuplicates(current.images).size === 0, 'Indexet innehåller dubbletter')
+    const log = await fs.readFile('testdata/app-data/dubbletter/flyttade.jsonl', 'utf8').catch(() => '')
+    const ids = new Set(current.images.map((image) => image.id))
+    for (const line of log.split('\n').filter(Boolean)) {
+      const moved = JSON.parse(line)
+      assert(existsSync(path.join('testdata', moved.to)), `${moved.to} saknas`)
+      assert(!ids.has(moved.id), `${moved.id} är flyttad men finns i indexet`)
+      assert(ids.has(moved.keptId), `${moved.keptId}, som behölls, saknas i indexet`)
+    }
   })
 
   console.log('3.4 Galleri')

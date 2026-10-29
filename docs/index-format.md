@@ -77,7 +77,15 @@ Alla fält finns alltid med. Saknade texter är tomma strängar, och saknade dat
 
 - Storlek, tagningstid, byline, nyckelord och bildtext läses från EXIF, IPTC och XMP. Byline blir `Foto: <fotograf>` om filen saknar upphovsperson.
 - `terms`, `rightsUntil`, `consent` och `blocked` finns inte i bildfilerna. Skriptet fyller i varierade testvärden så att alla varningar i appen förekommer.
-- Id:n behålls för sökvägar som redan finns i `index.json`. Nya bilder får nästa lediga nummer.
+- Id:n behålls för sökvägar som redan finns i `index.json`. Nya bilder får nästa lediga nummer. Id:n för flyttade dubbletter återanvänds aldrig.
+- Dubbletter (samma filnamn och, om båda har en, samma tagningstid) tas bort ur indexet. Den med högst upplösning behålls, vid lika upplösning den med lägst id. De andra flyttas till `app-data/dubbletter/` med samma sökväg som i `original/`, och deras miniatyrer och förhandsbilder tas bort. `-- --dry-run` listar dubbletterna utan att flytta något.
+- Varje flyttad fil loggas som en rad i `app-data/dubbletter/flyttade.jsonl`:
+
+  ```json
+  {"movedAt":"2026-10-29T15:48:05.421Z","id":"MB-000013","from":"original/Fotograf B/2012-000272_red2.jpg","to":"app-data/dubbletter/original/Fotograf B/2012-000272_red2.jpg","keptId":"MB-000002","keptPath":"original/Fotograf A/2012-000272_red2.jpg"}
+  ```
+
+  En flytt ångras genom att filen flyttas tillbaka från `to` till `from` och indexeringen körs igen. Bilden får då ett nytt id.
 - Miniatyrer och förhandsbilder skapas bara om de saknas eller är äldre än originalet. `-- --force` skapar om alla.
 - JPG, PNG, TIFF, WebP och GIF läses med sharp, och HEIC/HEIF avkodas med heic-decode.
 - RAW-filer (cr2, cr3, nef, arw, dng) avkodas inte. En JPG med samma namn i samma mapp blir förhandsbild, och paret blir en post. Finns ingen sådan JPG används den största JPG som är inbäddad i RAW-filen. `width` och `height` är då förhandsbildens storlek, som kan vara mindre än sensorns.

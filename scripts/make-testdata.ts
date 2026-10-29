@@ -4,11 +4,17 @@
 //   thumbs/<id>.webp       miniatyrer, längsta sidan 400 px
 //   previews/<id>.webp     förhandsbilder, längsta sidan 1600 px
 //
-//   npm run make-testdata              skapar bara det som saknas eller är äldre än originalet
-//   npm run make-testdata -- --force   skapar om alla bilder
+//   npm run make-testdata                skapar bara det som saknas eller är äldre än originalet
+//   npm run make-testdata -- --force     skapar om alla bilder
+//   npm run make-testdata -- --dry-run   listar dubbletter men flyttar inget
 //
 // Id:n behålls för sökvägar som redan finns i index.json, så att taggningar
 // som pekar på ett id fortsätter att gälla.
+//
+// Dubbletter (se src/catalog/duplicates.ts): den med högst upplösning behålls.
+// De andra flyttas till app-data/dubbletter/ med samma sökväg som i original/,
+// och varje flytt loggas i app-data/dubbletter/flyttade.jsonl så att den kan
+// ångras. Deras miniatyrer och förhandsbilder tas bort.
 //
 // Format:
 // - JPG (även .jfif), PNG, TIFF, WebP, AVIF och GIF läses med sharp.
@@ -32,6 +38,7 @@ import exifr from 'exifr'
 import ffmpegPath from 'ffmpeg-static'
 import heicDecode from 'heic-decode'
 import sharp, { type Sharp } from 'sharp'
+import { findDuplicates } from '../src/catalog/duplicates.ts'
 import { extension, HEIC_EXTENSIONS, RAW_EXTENSIONS, VIDEO_EXTENSIONS } from '../src/catalog/fileFormat.ts'
 import {
   formatId,
@@ -49,6 +56,7 @@ const THUMB_SIZE = 400
 const PREVIEW_SIZE = 1600
 const CONCURRENCY = 4
 const force = process.argv.includes('--force')
+const dryRun = process.argv.includes('--dry-run')
 
 const SHARP_EXTENSIONS = new Set(['jpg', 'jpeg', 'jfif', 'png', 'webp', 'avif', 'gif', 'tif', 'tiff'])
 // JPG föredras som förhandsbild till en RAW-fil, i den här ordningen.
@@ -345,6 +353,44 @@ async function makeRecord(source: Source, id: string, n: number): Promise<ImageR
   }
 }
 
+// En ledig sökväg: "bild.jpg", annars "bild (2).jpg" osv.
+async function freePath(target: string): Promise<string> {
+  const ext = path.extname(target)
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? target : `${target.slice(0, -ext.length || undefined)} (${n})${ext}`
+    if (!existsSync(candidate)) return candidate
+  }
+}
+
+async function moveDuplicates(
+  duplicates: Map<ImageRecord, ImageRecord>,
+  files: Map<string, string>,
+  appData: string,
+) {
+  const target = path.join(appData, 'dubbletter')
+  const log: string[] = []
+  for (const [duplicate, kept] of duplicates) {
+    for (const file of [duplicate.path, ...duplicate.alternates]) {
+      const to = await freePath(path.join(target, ...file.split('/')))
+      await fs.mkdir(path.dirname(to), { recursive: true })
+      await fs.rename(files.get(file)!, to)
+      log.push(
+        JSON.stringify({
+          movedAt: new Date().toISOString(),
+          id: duplicate.id,
+          from: file,
+          to: path.relative(path.dirname(appData), to).replaceAll('\\', '/'),
+          keptId: kept.id,
+          keptPath: kept.path,
+        }),
+      )
+    }
+    await fs.rm(path.join(ROOT, thumbPath(duplicate.id)), { force: true })
+    await fs.rm(path.join(ROOT, previewPath(duplicate.id)), { force: true })
+  }
+  await fs.appendFile(path.join(target, 'flyttade.jsonl'), log.map((line) => line + '\n').join(''))
+}
+
 async function main() {
   const originalDir = await findDirectory(ROOT, 'original')
   const appData = path.join(ROOT, 'app-data')
@@ -354,7 +400,12 @@ async function main() {
 
   const previous = await readIndex(indexFile)
   const ids = new Map(previous?.images.map((image) => [image.path, image.id]))
-  let nextId = Math.max(0, ...[...ids.values()].map((id) => Number(id.slice(3)))) + 1
+  // Id:n för flyttade dubbletter återanvänds aldrig, eftersom taggningar kan peka på dem.
+  const movedIds = await fs
+    .readFile(path.join(appData, 'dubbletter', 'flyttade.jsonl'), 'utf8')
+    .then((log) => log.split('\n').filter(Boolean).map((line) => JSON.parse(line).id as string))
+    .catch(() => [])
+  let nextId = Math.max(0, ...[...ids.values(), ...movedIds].map((id) => Number(id.slice(3)))) + 1
 
   const sources = await findSources(originalDir)
   console.log(`Hittade ${sources.length} bilder i ${path.relative(process.cwd(), originalDir)}`)
@@ -381,7 +432,23 @@ async function main() {
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker(queue)))
   if (failures.length) console.warn(`\n${failures.join('\n')}`)
 
-  const images = results.filter((image): image is ImageRecord => image !== null)
+  let images = results.filter((image): image is ImageRecord => image !== null)
+
+  const duplicates = findDuplicates(images)
+  if (duplicates.size) {
+    console.log(`\n${duplicates.size} dubbletter${dryRun ? ' (--dry-run, inget flyttas)' : ', flyttas till app-data/dubbletter/'}:`)
+    for (const [duplicate, kept] of duplicates) {
+      const size = (image: ImageRecord) => `${image.width}×${image.height}`
+      console.log(`  ${duplicate.id} ${duplicate.path} (${size(duplicate)})`)
+      console.log(`      behåller ${kept.id} ${kept.path} (${size(kept)})`)
+    }
+    if (!dryRun) {
+      const files = new Map(sources.flatMap((s) => [s, ...s.alternates]).map((s) => [s.path, s.file]))
+      await moveDuplicates(duplicates, files, appData)
+      images = images.filter((image) => !duplicates.has(image))
+    }
+  }
+
   const index: IndexFile = { version: INDEX_VERSION, generatedAt: new Date().toISOString(), images }
   await fs.writeFile(indexFile, JSON.stringify(index, null, 2) + '\n')
   console.log(`\nSkrev ${path.relative(process.cwd(), indexFile)} med ${images.length} bilder`)
