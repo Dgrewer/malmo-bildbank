@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -40,6 +42,53 @@ function contentSecurityPolicy(): Plugin {
   }
 }
 
+// Endast utvecklingsservern: lägger in testkroken src/dev/testdataHook.ts och
+// lämnar ut testdata/ till den. Finns inte i bygget.
+function testdataServer(): Plugin {
+  return {
+    name: 'testdata-server',
+    apply: 'serve',
+    transformIndexHtml() {
+      return [{ tag: 'script', attrs: { type: 'module', src: '/src/dev/testdataHook.ts' }, injectTo: 'head' }]
+    },
+    configureServer(server) {
+      const root = path.resolve(server.config.root, 'testdata')
+      server.middlewares.use('/__testdata', async (req, res) => {
+        const url = new URL(req.url ?? '', 'http://localhost')
+        const target = path.resolve(root, url.searchParams.get('path') ?? '')
+        if (target !== root && !target.startsWith(root + path.sep)) {
+          res.statusCode = 403
+          res.end()
+          return
+        }
+        try {
+          if (url.pathname === '/list') {
+            const entries = await fs.readdir(target, { withFileTypes: true })
+            res.setHeader('Content-Type', 'application/json')
+            res.end(
+              JSON.stringify(
+                entries.map((entry) => ({
+                  name: entry.name,
+                  kind: entry.isDirectory() ? 'directory' : 'file',
+                })),
+              ),
+            )
+          } else if (url.pathname === '/file') {
+            res.setHeader('Content-Type', 'application/octet-stream')
+            res.end(await fs.readFile(target))
+          } else {
+            res.statusCode = 404
+            res.end()
+          }
+        } catch {
+          res.statusCode = 404
+          res.end()
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), contentSecurityPolicy()],
+  plugins: [react(), contentSecurityPolicy(), testdataServer()],
 })
