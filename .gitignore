@@ -1,0 +1,61 @@
+# Beroenden och byggutdata
+node_modules/
+dist/
+
+# Miljövariabler
+.env
+.env.*
+
+# Bild- och videofiler (både gemener och versaler, kameror skriver ofta t.ex. .JPG/.CR2)
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.png
+*.PNG
+*.webp
+*.WEBP
+*.gif
+*.GIF
+*.tif
+*.TIF
+*.tiff
+*.TIFF
+*.heic
+*.HEIC
+*.heif
+*.HEIF
+*.cr2
+*.CR2
+*.cr3
+*.CR3
+*.nef
+*.NEF
+*.arw
+*.ARW
+*.dng
+*.DNG
+*.mp4
+*.MP4
+*.mov
+*.MOV
+
+# Appdata, var den än ligger
+app-data/
+
+# Modellfiler
+*.onnx
+*.bin
+*.safetensors
+*.gguf
+
+# Testdata
+testdata/
+
+# Systemfiler
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Undantag: gränssnittsikoner får versionshanteras
+!/public/icons/**
