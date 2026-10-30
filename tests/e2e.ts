@@ -1423,6 +1423,34 @@ try {
     assert(!suggestTags('Malmöhus', vocabulary).exact, 'Malmöhus får inte vara en annan tagg')
   })
 
+  await test('4.5 Samma bild, olika namn listas i Admin', async () => {
+    const { sameContent } = await import('../src/catalog/sameImage.ts')
+    const groups = sameContent([
+      { id: 'MB-1', path: 'original/A/a.jpg', hash: 'x' },
+      { id: 'MB-2', path: 'original/B/b.jpg', hash: 'x' },
+      // Samma namn i en annan mapp är en vanlig dubblett, och en bilds egna filer räknas inte.
+      { id: 'MB-3', path: 'original/A/c.jpg', hash: 'y' },
+      { id: 'MB-4', path: 'original/B/C.JPG', hash: 'y' },
+      { id: 'MB-5', path: 'original/A/d.CR2', hash: 'z' },
+      { id: 'MB-5', path: 'original/A/d.jpg', hash: 'z' },
+    ])
+    assert(JSON.stringify(groups.map((group) => group.map((file) => file.id))) === '[["MB-1","MB-2"]]', `Grupperna: ${JSON.stringify(groups)}`)
+
+    const page = importPage!
+    await clickButton(page, 'Samma bild')
+    await step('Jämförelsen', page.waitForSelector('.same-images [role="status"]', { timeout: 60_000 }))
+    const shown = await page.$$eval('.same-group', (lists) =>
+      lists.map((list) => [...list.querySelectorAll('li')].map((item) => (item as HTMLElement).innerText.replace(/\s+/g, ' '))),
+    )
+    // Testdatat har RAW-par.jpg som en kopia av Knutssalen Rådhuset.jpg.
+    assert(
+      shown.some((group) => group.some((text) => text.includes('Knutssalen Rådhuset.jpg')) && group.some((text) => text.includes('RAW-par.jpg') && text.includes('JPG till RAW-par.CR2'))),
+      `Samma bild visar: ${JSON.stringify(shown)}`,
+    )
+    await elementScreenshot(page, '.same-images > [role="status"]', '4.x-samma-bild')
+    await clickButton(page, 'Importera bilder')
+  })
+
   await test('4.5 AI-taggarna går att ändra i Admin, AI-taggar', async () => {
     const page = importPage!
     await clickButton(page, 'AI-taggar')

@@ -7,7 +7,7 @@ Det som återstår, i ordning. Bocka av när ett steg är klart och pushat.
 - [x] 4.6 Plats: stadsområde och delområde från bildens GPS, matchat lokalt mot Malmö stads öppna data (CC0) som följer med appen. Ingen GPS ger ingen plats. GPS-positionen sparas i indexet, så att kartan nedan kan använda den.
 - [x] Platsnamn: torg och parker (Malmö stads Parker och Torg, CC0) från GPS, och taggar som anger en plats (t.ex. Malmö rådhus → Stortorget) för bilder utan GPS. Visas som Stortorget · Gamla Staden · Norr och går att klicka på.
 - [x] Sätt en tagg på liknande bilder direkt från Redigera, i en panel över fotot.
-- [ ] Samma bild, olika namn: Admin listar filer med samma fingeravtryck (`hash`) men olika namn. Ingenting flyttas automatiskt.
+- [x] Samma bild, olika namn: Admin, fliken Samma bild, listar RAW-par vars RAW-fil eller JPG är samma fil som en annan bild. Vanliga kopior importerades redan bara en gång. Ingenting flyttas automatiskt.
 - [ ] Logg i Admin: ändringar (från `app-data/edits/`), nya och borttagna bilder (från importerna), med vem och när.
 - [ ] Sökruta i galleriet: taggar, ordlistan (svenska och engelska), fotograf och filnamn först, därefter AI-sök.
 - [ ] Utvärderingssida, bara i utvecklingsläge: de tio bästa träffarna för 20 svenska testfrågor.

@@ -4,6 +4,7 @@ import { loadOriginalsFolder, saveOriginalsFolder } from '../fs/folderStore.ts'
 import { MODEL } from '../ai/modelInfo.ts'
 import type { FromWorker, ImportResult, Phase, ScanSummary, ToWorker } from '../import/protocol.ts'
 import { captureFrame } from '../import/videoFrame.ts'
+import { SameImages } from './SameImages.tsx'
 import { TagEditor } from './TagEditor.tsx'
 
 interface Props {
@@ -69,7 +70,7 @@ export function AdminView({ bank, onClose }: Props) {
   const [changed, setChanged] = useState(false)
   // Kopiera nya original till bildbankens original/. Avstängt som standard.
   const [copy, setCopy] = useState(false)
-  const [tab, setTab] = useState<'import' | 'tags'>('import')
+  const [tab, setTab] = useState<'import' | 'tags' | 'same'>('import')
   // Sant medan AI-taggarna sparas.
   const [tagsBusy, setTagsBusy] = useState(false)
   // Fliken AI-taggar läses in första gången den öppnas.
@@ -200,6 +201,7 @@ export function AdminView({ bank, onClose }: Props) {
             [
               ['import', 'Importera bilder'],
               ['tags', 'AI-taggar'],
+              ['same', 'Samma bild'],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -235,6 +237,11 @@ export function AdminView({ bank, onClose }: Props) {
           />
         )}
       </div>
+
+      {/* Jämförs varje gång fliken öppnas, så att listan följer mappen. */}
+      {tab === 'same' && (
+        <SameImages key={imports} bank={bank} originals={originals.kind === 'ready' ? originals.handle : null} />
+      )}
 
       <div hidden={tab !== 'import'}>
 
