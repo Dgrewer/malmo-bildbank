@@ -401,6 +401,7 @@ async function makeRecord(source: Source, id: string, n: number): Promise<ImageR
     ...testRights(n),
     width: decoded.width,
     height: decoded.height,
+    place: null,
     takenAt: video?.takenAt ?? exifDate(tags?.DateTimeOriginal) ?? exifDate(tags?.CreateDate),
     tags: list(tags?.Keywords ?? tags?.subject),
     aiTags: [],
@@ -433,6 +434,7 @@ async function problemRecord(source: Source, id: string, n: number, error: unkno
     description: '',
     alternates: source.alternates.map((alternate) => alternate.path),
     durationSeconds: null,
+    place: null,
     previewProblem:
       error instanceof PreviewProblem
         ? error.message

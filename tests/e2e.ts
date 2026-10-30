@@ -32,6 +32,7 @@ import {
 } from '../src/catalog/fileFormat.ts'
 import { combinedHash, quickHash } from '../src/import/hash.ts'
 import { readMetadata } from '../src/import/metadata.ts'
+import { placeAt } from '../src/catalog/places.ts'
 import { readVideoInfo } from '../src/import/video.ts'
 import UTIF from 'utif2'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
@@ -278,7 +279,7 @@ async function expectedImport(root: string) {
 async function testRecord(id: string, file: string, photographer: string): Promise<ImageRecord> {
   return {
     id, path: file, photographer, byline: '', terms: '', rightsUntil: null, consent: 'not-required', blocked: false,
-    width: 0, height: 0, takenAt: null, tags: [], aiTags: [], description: '', alternates: [], durationSeconds: null,
+    width: 0, height: 0, takenAt: null, tags: [], aiTags: [], description: '', alternates: [], durationSeconds: null, place: null,
     previewProblem: null, hash: null, fileSize: null, fileModified: null,
   }
 }
@@ -703,6 +704,7 @@ try {
     description: '',
     alternates: [],
     durationSeconds: null,
+    place: null,
     previewProblem: null,
     hash: null,
     fileSize: null,
@@ -1238,6 +1240,16 @@ try {
       assert(!(await viewer.$('dialog.detail[open]')), 'Detaljvyn är kvar efter klick på en tagg')
       await clickButton(viewer, 'Visa alla bilder')
       await viewer.waitForFunction(() => !document.querySelector('.filter-bar'), { timeout: 5_000 })
+
+      // Platsen i detaljvyn: ett klick på delområdet visar bilderna därifrån.
+      const placed = index.images.findIndex((image) => image.place?.subdistrict)
+      assert(placed >= 0, 'Ingen bild har en plats')
+      const subdistrict = index.images[placed].place!.subdistrict!
+      await viewer.locator(`.gallery-cell[data-index="${placed}"]`).click()
+      await step('Platsen i detaljvyn', viewer.locator(`dialog.detail[open] .detail-place button::-p-text(${subdistrict})`).click())
+      const fromThere = index.images.filter((image) => image.place?.subdistrict === subdistrict).length
+      await waitForText(viewer, `Bilder från ${subdistrict} · ${fromThere.toLocaleString('sv-SE')} ${fromThere === 1 ? 'bild' : 'bilder'}`)
+      await clickButton(viewer, 'Visa alla bilder')
     } finally {
       await viewer.close()
     }
@@ -1525,6 +1537,35 @@ try {
     assert(!/Ã|Â/.test(texts), 'Felkodade tecken finns kvar')
     assert(firstIndex!.images.some((image) => image.tags.length), 'Ingen bild fick nyckelord')
     assert(firstIndex!.images.some((image) => image.description), 'Ingen bild fick bildtext')
+  })
+
+  await test('4.6 platsen räknas ut från GPS mot Malmös områden', async () => {
+    const areas = JSON.parse(await fs.readFile('src/places/malmo-areas.json', 'utf8'))
+    const wrong: string[] = []
+    for (const wanted of expected.kept) {
+      const actual = firstIndex!.images.find((image) => image.path === wanted.path)!
+      const place = placeAt(wanted.gps, areas)
+      if (JSON.stringify(actual.gps ?? null) !== JSON.stringify(wanted.gps ?? null)) {
+        wrong.push(`${wanted.path} gps: ${JSON.stringify(actual.gps)}, väntade ${JSON.stringify(wanted.gps)}`)
+      }
+      if (JSON.stringify(actual.place) !== JSON.stringify(place)) {
+        wrong.push(`${wanted.path} plats: ${JSON.stringify(actual.place)}, väntade ${JSON.stringify(place)}`)
+      }
+    }
+    assert(!wrong.length, wrong.slice(0, 5).join('\n      '))
+    const placed = firstIndex!.images.filter((image) => image.place)
+    assert(placed.length > 0 && placed.every((image) => image.place!.subdistrict), `${placed.length} bilder fick en plats`)
+    assert(firstIndex!.images.every((image) => image.gps || !image.place), 'En bild utan GPS fick en plats')
+    console.log(
+      `      ${placed.length} av ${firstIndex!.images.length} bilder fick en plats, i ${new Set(placed.map((image) => image.place!.subdistrict)).size} delområden`,
+    )
+    // Kända punkter: Stortorget ligger i Gamla Staden i stadsområde Norr,
+    // Turning Torso i Västra Hamnen och Hyllie station i Hyllievång i Väster.
+    const at = (latitude: number, longitude: number) => JSON.stringify(placeAt({ latitude, longitude }, areas))
+    assert(at(55.6056, 13.0006) === '{"district":"Norr","subdistrict":"Gamla Staden"}', `Stortorget: ${at(55.6056, 13.0006)}`)
+    assert(at(55.6131, 12.9758) === '{"district":"Norr","subdistrict":"Västra Hamnen"}', `Turning Torso: ${at(55.6131, 12.9758)}`)
+    assert(at(55.5636, 12.9757) === '{"district":"Väster","subdistrict":"Hyllievång"}', `Hyllie: ${at(55.5636, 12.9757)}`)
+    assert(placeAt({ latitude: 59.3293, longitude: 18.0686 }, areas) === null, 'Stockholm fick en plats i Malmö')
     // Filmens längd och inspelningstid jämförs med vad ffmpeg gav (testdata/app-data).
     const old: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
     for (const video of old.images.filter((image) => image.durationSeconds)) {
@@ -1602,6 +1643,13 @@ try {
     const [moved, renamed] = [pick(firstIndex!, 'Fotograf A'), pick(firstIndex!, 'Fotograf B')]
     await opfsMove(page, bank, moved.path, 'original/Fotograf C/Flyttad hit.jpg')
     await opfsMove(page, bank, renamed.path, renamed.path.replace(/[^/]+$/, 'Nytt namn.jpg'))
+    // Ett index från före platserna saknar gps. Importen läser då positionen ur filerna.
+    const withoutGps = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    for (const image of withoutGps.images) {
+      delete image.gps
+      delete (image as Partial<ImageRecord>).place
+    }
+    await writeOpfs(page, `${bank}/app-data/index.json`, JSON.stringify(withoutGps, null, 2))
     await clickButton(page, 'Sök efter ändringar')
     const { counts, lists } = await waitForPreview(page)
     assert(counts.moved === 2 && counts.new === 0 && counts.removed === 0, `Efter flytt: ${JSON.stringify(counts)}`)
@@ -1618,6 +1666,10 @@ try {
     assert(byId.get(moved.id)?.photographer === 'Fotograf C', 'Fotografen följer inte med flytten')
     assert(byId.get(renamed.id)?.path.endsWith('/Nytt namn.jpg'), 'Den omdöpta bilden bytte id')
     assert(index.images.length === firstIndex!.images.length, 'Antalet bilder ändrades')
+    const lostPlace = firstIndex!.images.filter(
+      (image) => JSON.stringify(byId.get(image.id)?.place) !== JSON.stringify(image.place) || byId.get(image.id)?.gps === undefined,
+    )
+    assert(!lostPlace.length, `Platsen lästes inte om: ${lostPlace.slice(0, 3).map((image) => image.path)}`)
     assert((await readOpfs(page, `${bank}/app-data/index.prev.json`)) === before, 'index.prev.json är inte förra versionen')
     firstIndex = index
   })

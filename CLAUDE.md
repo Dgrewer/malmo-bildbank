@@ -31,7 +31,7 @@ app-data/
   dubbletter/               Bortflyttade dubbletter och loggen flyttade.jsonl
 ```
 
-Indexformatet beskrivs i `docs/index-format.md`.
+Indexformatet beskrivs i `docs/index-format.md`. Det som återstår att bygga står i `docs/plan.md`. Läs den när ett steg är klart, och bocka av där.
 
 ## Taggning
 

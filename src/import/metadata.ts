@@ -1,4 +1,5 @@
 import exifr from 'exifr'
+import { gpsFrom, type Gps } from '../catalog/places.ts'
 
 // Uppgifter som läses ur bildfilens EXIF, IPTC och XMP.
 export interface Metadata {
@@ -10,6 +11,7 @@ export interface Metadata {
   width: number
   height: number
   orientation: number | null
+  gps: Gps | null
 }
 
 // exifr:s resultat har inga typer. Fälten nedan är de som används.
@@ -105,5 +107,13 @@ export async function readMetadata(file: Source, companion?: Source): Promise<Me
     width,
     height,
     orientation,
+    // exifr räknar om EXIF:s grader, minuter och sekunder till latitude och longitude.
+    gps: gpsFrom(tags.latitude, tags.longitude),
   }
+}
+
+// Bara GPS-positionen, för bilder som importerades innan positionen sparades.
+export async function readGps(file: Source, companion?: Source): Promise<Gps | null> {
+  const tags = (await parse(file)) ?? (companion ? await parse(companion) : null) ?? {}
+  return gpsFrom(tags.latitude, tags.longitude)
 }

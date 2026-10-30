@@ -16,6 +16,8 @@ interface Props {
   onNavigate: (position: number) => void
   // Visar alla bilder med taggen i galleriet.
   onTag: (tag: string) => void
+  // Visar alla bilder från stadsområdet eller delområdet i galleriet.
+  onPlace: (place: string) => void
   onClose: () => void
 }
 
@@ -41,7 +43,7 @@ function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => vo
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
-export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onClose }: Props) {
+export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
   const expired = rightsExpired(image)
@@ -177,6 +179,24 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </dd>
           <dt>Samtycke</dt>
           <dd>{CONSENT_TEXT[image.consent]}</dd>
+          <dt>Plats</dt>
+          <dd className="detail-place">
+            {image.place ? (
+              <ul className="tag-list">
+                {[image.place.subdistrict, image.place.district].filter((name) => name !== null).map((name) => (
+                  <li key={name}>
+                    <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
+                      {name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : image.gps ? (
+              'Utanför Malmö'
+            ) : (
+              'Okänd, bilden saknar GPS-position'
+            )}
+          </dd>
           <dt>Taggar</dt>
           <dd className="detail-tags">
             {tags.length ? (

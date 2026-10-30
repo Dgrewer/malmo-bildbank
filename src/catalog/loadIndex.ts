@@ -28,6 +28,7 @@ export function parseIndex(text: string, name = 'app-data/index.json'): IndexFil
       alternates: image.alternates ?? [],
       aiTags: image.aiTags ?? [],
       durationSeconds: image.durationSeconds ?? null,
+      place: image.place ?? null,
       previewProblem: image.previewProblem ?? null,
       hash: image.hash ?? null,
       fileSize: image.fileSize ?? null,

@@ -42,7 +42,9 @@ import {
 } from './images.ts'
 import { recoverIndexFiles, writeIndexFile } from './indexFiles.ts'
 import { Journal, readJournal } from './journal.ts'
-import { readMetadata } from './metadata.ts'
+import { readGps, readMetadata } from './metadata.ts'
+import { placeAt, type Gps } from '../catalog/places.ts'
+import AREAS from '../places/malmo-areas.json'
 import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
 import type { FromWorker, Phase, ScanSummary, ToWorker } from './protocol.ts'
 import { scanOriginals, type ScannedFile } from './scan.ts'
@@ -304,6 +306,7 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
     aiTags: [],
     description: '',
     durationSeconds: null,
+    place: null,
     previewProblem: null,
     ...previous,
     id: item.id,
@@ -316,6 +319,21 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
   }
 }
 
+// exifr läser annars bara början av filen. I TIFF och TIFF-baserade RAW-filer
+// kan uppgifterna ligga längre in.
+async function metadataSource(file: File): Promise<File | Uint8Array> {
+  const ext = extension(file.name)
+  return RAW_EXTENSIONS.has(ext) || TIFF_EXTENSIONS.has(ext) ? new Uint8Array(await file.arrayBuffer()) : file
+}
+
+// GPS-positionen för en oförändrad bild som importerades innan positionen sparades.
+async function gpsOf(item: PlanItem<HashedScannedFile>): Promise<Gps | null> {
+  const file = await item.file.handle.getFile()
+  if (isVideo(file.name)) return null
+  const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
+  return readGps(await metadataSource(file), companion)
+}
+
 // Metadata läses och bilder skapas för nya och ändrade filer. En flyttad fil
 // har samma innehåll och behåller sina uppgifter, bilder och AI-taggar.
 async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): Promise<ImageRecord> {
@@ -325,21 +343,18 @@ async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): 
   const file = await item.file.handle.getFile()
   if (isVideo(file.name)) {
     const video = await readVideoInfo(file)
-    const updated = { ...record, byline: record.byline || `Foto: ${record.photographer}`, ...video }
+    const updated = { ...record, byline: record.byline || `Foto: ${record.photographer}`, gps: null, ...video }
     return withImages(current, updated, () => videoFrame(file))
   }
   const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
-  // exifr läser annars bara början av filen. I TIFF och TIFF-baserade RAW-filer
-  // kan uppgifterna ligga längre in.
-  const ext = extension(file.name)
-  const whole = RAW_EXTENSIONS.has(ext) || TIFF_EXTENSIONS.has(ext)
-  const metadata = await readMetadata(whole ? new Uint8Array(await file.arrayBuffer()) : file, companion)
+  const metadata = await readMetadata(await metadataSource(file), companion)
   const updated = {
     ...record,
     byline: metadata.byline || `Foto: ${record.photographer}`,
     takenAt: metadata.takenAt,
     tags: metadata.tags,
     description: metadata.description,
+    gps: metadata.gps,
   }
   return withImages(current, updated, () => decodeImage(file, metadata.orientation, companion))
 }
@@ -507,11 +522,17 @@ async function copyOriginals(current: Session, images: ImageRecord[]) {
 async function runImport(current: Session, copy: boolean) {
   const { bank, plan, journal } = current
   const work = plan.items.filter((item) => item.change !== 'unchanged')
+  // Bilder från före platserna saknar GPS-positionen. Den läses ur filen en gång,
+  // även för flyttade filer, som annars behåller sina uppgifter.
+  const withoutGps = plan.items.filter(
+    (item) => (item.change === 'unchanged' || item.change === 'moved') && item.previous?.gps === undefined,
+  )
+  const total = work.length + withoutGps.length
   const records = new Map<string, ImageRecord>()
   try {
     for (const item of work) {
       await breathe()
-      progress('import', records.size, work.length)
+      progress('import', records.size, total)
       const record = await makeRecord(current, item)
       records.set(item.id, record)
       await journal.add(record)
@@ -520,10 +541,18 @@ async function runImport(current: Session, copy: boolean) {
     await journal.flush()
     throw error
   }
-  progress('import', work.length, work.length)
+  const gps = new Map<string, Gps | null>()
+  for (const item of withoutGps) {
+    await breathe()
+    progress('import', records.size + gps.size, total)
+    gps.set(item.id, await gpsOf(item))
+  }
+  progress('import', total, total)
 
+  // Platsen räknas ut för alla bilder, så att ändrade områden slår igenom.
   const all = plan.items
-    .map((item) => records.get(item.id) ?? baseRecord(item))
+    .map((item) => ({ ...(records.get(item.id) ?? baseRecord(item)), ...(gps.has(item.id) && { gps: gps.get(item.id) }) }))
+    .map((record) => ({ ...record, place: placeAt(record.gps, AREAS) }))
     .sort((a, b) => idNumber(a.id) - idNumber(b.id))
   // Av filer med samma namn och tagningstid behålls den med högst upplösning.
   // De andra tas inte med i indexet, men filerna ligger kvar i originalmappen.

@@ -16,6 +16,12 @@ interface Catalog {
   previews: FileSystemDirectoryHandle
 }
 
+// Det som galleriet visar bilder med: en tagg, eller ett stadsområde eller delområde.
+interface Filter {
+  kind: 'tag' | 'place'
+  value: string
+}
+
 type State = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; catalog: Catalog }
 
 async function loadCatalog(root: FileSystemDirectoryHandle): Promise<Catalog> {
@@ -50,8 +56,8 @@ interface Props {
 export function Library({ root, onChangeFolder }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' })
   const [selected, setSelected] = useState<number | null>(null)
-  // Taggen som galleriet visar bilder med, eller null för alla bilder.
-  const [tag, setTag] = useState<string | null>(null)
+  // Taggen eller platsen som galleriet visar bilder med, eller null för alla bilder.
+  const [filter, setFilter] = useState<Filter | null>(null)
   const [admin, setAdmin] = useState(false)
   // Räknas upp när importen har ändrat indexet, så att katalogen läses om.
   const [version, setVersion] = useState(0)
@@ -71,13 +77,16 @@ export function Library({ root, onChangeFolder }: Props) {
 
   const catalog = state.kind === 'ready' ? state.catalog : null
   const shown = useMemo(() => {
-    if (!catalog || !tag) return catalog?.images ?? []
-    const key = wordKey(tag)
+    if (!catalog || !filter) return catalog?.images ?? []
+    if (filter.kind === 'place') {
+      return catalog.images.filter((image) => image.place?.district === filter.value || image.place?.subdistrict === filter.value)
+    }
+    const key = wordKey(filter.value)
     return catalog.images.filter((image) => catalog.tags.get(image.id)!.some((other) => wordKey(other.tag) === key))
-  }, [catalog, tag])
+  }, [catalog, filter])
 
-  function showTag(next: string) {
-    setTag(next)
+  function show(next: Filter) {
+    setFilter(next)
     setSelected(null)
   }
 
@@ -113,18 +122,19 @@ export function Library({ root, onChangeFolder }: Props) {
           {state.message}
         </p>
       )}
-      {!admin && catalog && tag && (
+      {!admin && catalog && filter && (
         <div className="filter-bar" role="status">
           <span>
-            Bilder med taggen <strong className="filter-tag">{tag}</strong> · {shown.length.toLocaleString('sv-SE')}{' '}
+            {filter.kind === 'tag' ? 'Bilder med taggen' : 'Bilder från'} <strong className="filter-tag">{filter.value}</strong> ·{' '}
+            {shown.length.toLocaleString('sv-SE')}{' '}
             {shown.length === 1 ? 'bild' : 'bilder'}
           </span>
-          <button type="button" onClick={() => setTag(null)}>
+          <button type="button" onClick={() => setFilter(null)}>
             Visa alla bilder
           </button>
         </div>
       )}
-      {!admin && catalog && <Gallery key={tag ?? ''} images={shown} thumbs={catalog.thumbs} onOpen={setSelected} />}
+      {!admin && catalog && <Gallery key={filter ? `:` : ''} images={shown} thumbs={catalog.thumbs} onOpen={setSelected} />}
       {catalog && selected !== null && shown[selected] && (
         <DetailView
           image={shown[selected]}
@@ -133,7 +143,8 @@ export function Library({ root, onChangeFolder }: Props) {
           count={shown.length}
           previews={catalog.previews}
           onNavigate={setSelected}
-          onTag={showTag}
+          onTag={(value) => show({ kind: 'tag', value })}
+          onPlace={(value) => show({ kind: 'place', value })}
           onClose={() => setSelected(null)}
         />
       )}

@@ -1,5 +1,7 @@
 // Formatet för app-data/index.json. Beskrivs i docs/index-format.md.
 
+import type { Gps, Place } from './places.ts'
+
 export const INDEX_VERSION = 1
 
 export interface IndexFile {
@@ -66,6 +68,12 @@ export interface ImageRecord {
   description: string
   alternates: string[]
   durationSeconds: number | null
+  // GPS-positionen ur EXIF, eller null om den saknas. Saknas fältet helt
+  // (index från före platserna) läser nästa import positionen ur filen.
+  gps?: Gps | null
+  // Stadsområde och delområde, uträknade från gps vid varje import. null utan
+  // GPS eller utanför Malmö.
+  place: Place | null
   // Varför förhandsbilden saknas, eller null om den finns.
   previewProblem: string | null
   // Snabbt fingeravtryck av originalet (se src/import/hash.ts), dess storlek i

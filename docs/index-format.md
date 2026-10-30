@@ -83,6 +83,8 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `description` | sträng | Bildtext. Tom sträng om den saknas. Radbrytningar är `\n`. |
 | `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
 | `durationSeconds` | tal eller `null` | Längd i sekunder för video, `null` för bilder. För video är `width` och `height` filmens bildstorlek och `takenAt` inspelningstiden. Appen läser äldre index utan fältet som `null`. |
+| `gps` | objekt eller `null` | GPS-positionen ur EXIF, `{"latitude": 55.6056, "longitude": 13.0006}` i WGS84 med sex decimaler. `null` om bilden saknar position, och alltid `null` för video. Saknas fältet (index från före platserna) läser nästa import positionen ur originalet, även för oförändrade filer. |
+| `place` | objekt eller `null` | Stadsområde och delområde, `{"district": "Innerstaden", "subdistrict": "Davidshall"}`. Räknas ut från `gps` vid varje import, mot Malmö stads områden i `src/places/malmo-areas.json`. `null` utan GPS eller utanför Malmö. `subdistrict` är `null` om positionen inte ligger i något delområde. Appen läser äldre index utan fältet som `null`. |
 | `previewProblem` | sträng eller `null` | Varför miniatyr och förhandsbild saknas, skrivet för den som ska åtgärda det. `null` när de finns. Då är `width` och `height` 0, och appen visar en !-ikon med förklaringen. Appen läser äldre index utan fältet som `null`. |
 | `hash` | sträng eller `null` | Snabbt fingeravtryck av originalet: `q1-` och SHA-256 i hex av filens storlek (8 byte, big-endian) följd av filens första och sista 4 MB, eller hela filen om den är högst 8 MB. För ett RAW-par är det SHA-256 av de två filernas fingeravtryck, åtskilda av radbrytning. Används för att känna igen flyttade och omdöpta filer. `null` i index från före importen i appen. |
 | `fileSize`, `fileModified` | heltal eller `null` | Originalets storlek i byte och ändringstid i millisekunder sedan 1970. Är båda oförändrade återanvänds `hash` utan att filen läses. |
@@ -180,6 +182,12 @@ Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-tag
 - Två taggar med samma prompt och tröskelvärde hamnar alltid på samma bilder. Så är solnedgång och soluppgång gjorda, eftersom modellen inte kan se skillnad på dem och man ska hitta alla bilderna oavsett vilket ord man söker på.
 - Förvalda tröskelvärden: taggens medianvärde över testbilderna plus 0,03, men minst 0,04. Allmänna taggar som "himmel" och "hamn" får då en högre gräns, eftersom de annars hamnar på många bilder. Testbilderna får i snitt 6 taggar. "flygbild" och "drönarbild" har samma prompt och gränsen 0,03, vald mot drönarbilderna (filnamn DJI_) i testdata: 33 av 45 hittas och 4 andra bilder får taggen. Bilder tagna snett från låg höjd känns sämre igen. Med fem exempelbilder i stället hittades 41 av 45, med 6 fel. Gränserna kan behöva justeras för den riktiga bildbanken, under Admin, AI-taggar.
 - De förvalda taggarna beskriver motiv, platser, byggnader (även kyrka, moské och synagoga), personer (kvinna, man, barn, ungdomar, äldre, rullstol), aktiviteter (även demonstration), årstider och bildtyper. Det finns inga taggar för etnicitet eller hälsa.
+
+## Platser
+
+`src/places/malmo-areas.json` följer med appen och används bara av importen. Den görs av `scripts/make-places.ts` från Malmö stads öppna data (CC0, https://opendata-api.malmo.se): Stadsområden (GeoJSON, WGS84) och Delområden (TopoJSON, WGS84). Namnen skrivs om från versaler, t.ex. "VÄSTRA HAMNEN" till "Västra Hamnen". Koordinaterna avrundas till ungefär en meter. Ändras områdena: hämta filerna igen, kör skriptet och importera, så räknas platsen om för alla bilder.
+
+Platsen kan inte ändras i appen än. Det kommer med ändringarna i `app-data/edits/`, se `docs/plan.md`. En ändring där ska gå före den uträknade platsen.
 
 ## Import
 
