@@ -52,17 +52,17 @@ interface Props {
 }
 
 // Ett utkast till en tagg. key skiljer taggarna åt medan namnet ändras.
-interface Draft extends AiTag {
+export interface Draft extends AiTag {
   key: number
 }
 
-interface Drafts {
+export interface Drafts {
   atLeastOneTag: boolean
   tags: Draft[]
   hiddenKeywords: string[]
 }
 
-type Loaded = {
+export type Loaded = {
   index: IndexFile
   // Bilder med AI-vektor, i indexets ordning.
   images: ImageRecord[]
@@ -87,8 +87,8 @@ const PAGE = 60
 const UI_CHUNK = 4
 const breathe = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-const count = (n: number) => n.toLocaleString('sv-SE')
-const format = (n: number) => n.toLocaleString('sv-SE', { minimumFractionDigits: 3, maximumFractionDigits: 4 })
+export const count = (n: number) => n.toLocaleString('sv-SE')
+export const format = (n: number) => n.toLocaleString('sv-SE', { minimumFractionDigits: 3, maximumFractionDigits: 4 })
 const rangeOf = (tag: AiTag) => (hasExamples(tag) ? EXAMPLE_RANGE : TEXT_RANGE)
 
 let nextKey = 1
@@ -97,7 +97,7 @@ const toDrafts = (config: BankConfig): Drafts => ({
   tags: config.aiTags.map((tag) => ({ ...tag, key: nextKey++ })),
   hiddenKeywords: config.hiddenKeywords ?? [],
 })
-const toConfig = (drafts: Drafts): BankConfig => ({
+export const toConfig = (drafts: Drafts): BankConfig => ({
   version: 1,
   atLeastOneTag: drafts.atLeastOneTag,
   aiTags: drafts.tags.map(({ tag, prompt, threshold, examples, excluded, included, synonyms, related, place }) => ({
@@ -133,7 +133,7 @@ const without = (list: string[] | undefined, id: string) => {
   return rest.length ? rest : undefined
 }
 
-async function load(bank: FileSystemDirectoryHandle): Promise<Loaded> {
+export async function load(bank: FileSystemDirectoryHandle): Promise<Loaded> {
   if (!(await hasModel(bank))) {
     throw new Error(`AI-modellen saknas i app-data/models/${MODEL.name}. Kör npm run download-model och importera.`)
   }
@@ -158,7 +158,7 @@ async function load(bank: FileSystemDirectoryHandle): Promise<Loaded> {
 // Sparar taggarna i config.json och sätter nya AI-taggar på alla bilder.
 // Ordningen är densamma som vid importen: textvektorerna först, sedan indexet,
 // sist borttagning av gamla textvektorer.
-async function save(
+export async function save(
   bank: FileSystemDirectoryHandle,
   config: BankConfig,
   known: PromptVectors,
@@ -642,7 +642,7 @@ function validate(drafts: Draft[]): string[] {
   return [...new Set(problems)]
 }
 
-interface Scored {
+export interface Scored {
   image: ImageRecord
   score: number
   override: Override
@@ -993,7 +993,7 @@ interface ThumbProps {
   onWrong: (id: string) => void
 }
 
-function ImageRow({ items, below = false, ...props }: ThumbProps & { items: Scored[]; below?: boolean }) {
+export function ImageRow({ items, below = false, ...props }: ThumbProps & { items: Scored[]; below?: boolean }) {
   return (
     <ul className="tag-thumbs">
       {items.map((item) => (
@@ -1003,7 +1003,7 @@ function ImageRow({ items, below = false, ...props }: ThumbProps & { items: Scor
   )
 }
 
-function TagThumb({
+export function TagThumb({
   image,
   score,
   below = false,
@@ -1052,7 +1052,7 @@ function TagThumb({
 }
 
 // En bild som inte får taggen för att den, eller en nästan likadan bild, är markerad som fel.
-function WrongThumb({
+export function WrongThumb({
   image,
   similar,
   thumbs,

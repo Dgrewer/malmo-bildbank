@@ -117,6 +117,12 @@ export function Library({ root, onChangeFolder }: Props) {
     )
   }
 
+  // Läser om bilderna efter en ny AI-tagg, utan att stänga bilden som är öppen.
+  async function reloadTags() {
+    const next = await loadCatalog(root)
+    setState({ kind: 'ready', catalog: next })
+  }
+
   function show(next: Filter) {
     setFilter(next)
     setSelected(null)
@@ -173,6 +179,8 @@ export function Library({ root, onChangeFolder }: Props) {
           tags={edited!.tags.get(shown[selected].id)!}
           vocabulary={catalog.vocabulary}
           onSave={saveEdits}
+          bank={root}
+          onTagsSaved={reloadTags}
           position={selected}
           count={shown.length}
           previews={catalog.previews}

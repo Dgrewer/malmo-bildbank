@@ -6,6 +6,7 @@ import type { Edit } from '../catalog/edits.ts'
 import { placeParts } from '../catalog/places.ts'
 import type { ShownTag, Vocabulary } from '../catalog/vocabulary.ts'
 import { EditForm } from './EditForm.tsx'
+import { SimilarPanel } from './SimilarPanel.tsx'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 interface Props {
@@ -24,6 +25,10 @@ interface Props {
   vocabulary: Vocabulary
   // Sparar ändringar i användarens egen fil i app-data/edits/.
   onSave: (user: string, edits: Edit[]) => Promise<void>
+  // Bildbanken, för panelen som sätter en tagg på liknande bilder.
+  bank: FileSystemDirectoryHandle
+  // Anropas när en ny AI-tagg har sparats, så att bilderna läses om.
+  onTagsSaved: () => Promise<void>
   onClose: () => void
 }
 
@@ -49,10 +54,12 @@ function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => vo
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
-export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, vocabulary, onSave, onClose }: Props) {
+export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, vocabulary, onSave, bank, onTagsSaved, onClose }: Props) {
   // Bilden som redigeras, eller null. Byts bilden avslutas redigeringen.
   const [editing, setEditing] = useState<string | null>(null)
   const isEditing = editing === image.id
+  // Taggen som panelen sätter på liknande bilder, eller null.
+  const [similar, setSimilar] = useState<string | null>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
   const expired = rightsExpired(image)
@@ -78,8 +85,11 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
       aria-labelledby="detail-title"
       onClose={onClose}
       onCancel={(event) => {
-        // Esc avbryter redigeringen i stället för att stänga bilden.
-        if (isEditing) {
+        // Esc stänger panelen, och annars redigeringen, i stället för att stänga bilden.
+        if (similar) {
+          event.preventDefault()
+          setSimilar(null)
+        } else if (isEditing) {
           event.preventDefault()
           setEditing(null)
         }
@@ -180,6 +190,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             vocabulary={vocabulary}
             onSave={onSave}
             onDone={() => setEditing(null)}
+            onSimilar={setSimilar}
           />
         ) : (
           <dl className="detail-fields">
@@ -250,6 +261,9 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </dl>
         )}
       </div>
+      {similar && isEditing && (
+        <SimilarPanel bank={bank} image={image} tag={similar} onSaved={onTagsSaved} onClose={() => setSimilar(null)} />
+      )}
     </dialog>
   )
 }

@@ -13,6 +13,8 @@ interface Props {
   vocabulary: Vocabulary
   onSave: (user: string, edits: Edit[]) => Promise<void>
   onDone: () => void
+  // Öppnar panelen som sätter en tagg på liknande bilder.
+  onSimilar: (tag: string) => void
 }
 
 // Delområdena för platsväljaren, efter stadsområde. Laddas först när någon redigerar.
@@ -37,7 +39,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 // Redigerar bildens uppgifter och taggar. Inget sparas förrän man trycker Spara,
 // och då bara det som har ändrats, i användarens egen fil i app-data/edits/.
-export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
+export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }: Props) {
   const [values, setValues] = useState<FieldValues>(() => ({
     photographer: image.photographer,
     byline: image.byline,
@@ -87,8 +89,11 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
   const shown = useMemo(() => {
     const removed = tags.filter((shown) => changed.get(wordKey(shown.tag))?.on === false).map((shown) => shown.tag)
     const kept = tags.filter((shown) => !removed.includes(shown.tag))
-    const added = [...changed.values()].filter((change) => change.on).map((change) => ({ tag: change.tag, ai: false }))
-    return { kept: [...kept, ...added], removed }
+    // En tillagd tagg som bilden redan har fått som AI-tagg visas en gång.
+    const added = [...changed.values()]
+      .filter((change) => change.on && !tags.some((shown) => wordKey(shown.tag) === wordKey(change.tag)))
+      .map((change) => ({ tag: change.tag, ai: false }))
+    return { kept: [...kept, ...added], removed, added: added.map((change) => change.tag) }
   }, [tags, changed])
 
   async function save() {
@@ -229,6 +234,15 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
           disabled={saving}
           onSet={setTag}
         />
+        {shown.added.length > 0 && (
+          <div className="similar-buttons">
+            {shown.added.map((tag) => (
+              <button key={tag} type="button" className="similar-button" disabled={saving} onClick={() => onSimilar(tag)}>
+                Sätt ”{tag}” på liknande bilder
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {error && (
         <p className="error" role="alert">

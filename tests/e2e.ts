@@ -37,6 +37,7 @@ import { readVideoInfo } from '../src/import/video.ts'
 import UTIF from 'utif2'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
+import type { BankConfig } from '../src/ai/tagConfig.ts'
 
 const PORT = 5199
 const ORIGIN = `http://localhost:${PORT}`
@@ -1294,6 +1295,29 @@ try {
       await viewer.type('.edit-form .add-tag input', 'testtagg')
       await viewer.keyboard.press('Enter')
       await step('Ny tagg i formuläret', viewer.waitForSelector('.edit-form .chip[data-tag="testtagg"]', { timeout: 5_000 }))
+      // Sätt på liknande bilder: panelen ligger över fotot, och Tillbaka går
+      // tillbaka till redigeringen som den var.
+      await viewer.click('.edit-form .similar-button')
+      await step('Panelen för liknande bilder', viewer.waitForSelector('.similar-panel .tag-hits', { timeout: 30_000 }))
+      const panel = await viewer.$eval('dialog.detail[open]', (dialog) => {
+        const box = (selector: string) => JSON.stringify(dialog.querySelector(selector)!.getBoundingClientRect())
+        return {
+          example: dialog.querySelector('.similar-panel h4 + .tag-thumbs li')?.getAttribute('data-id'),
+          overPreview: box('.similar-panel') === box('.detail-preview'),
+          heading: dialog.querySelector('.similar-panel h3')!.textContent,
+        }
+      })
+      assert(
+        panel.example === edited.id && panel.overPreview && panel.heading === '”testtagg” på liknande bilder',
+        `Panelen: ${JSON.stringify(panel)}`,
+      )
+      await clickButton(viewer, '← Tillbaka till redigeringen')
+      await viewer.waitForFunction(() => !document.querySelector('.similar-panel'), { timeout: 5_000 })
+      assert(
+        (await viewer.$eval('.edit-form label::-p-text(Byline) input', (input) => (input as HTMLInputElement).value)) ===
+          'Foto: Ändrad i test' && (await viewer.$('.detail-info.editing .edit-form .chip[data-tag="testtagg"]')),
+        'Redigeringen var inte kvar efter Tillbaka',
+      )
       await viewer.waitForSelector('.edit-form label::-p-text(Plats) select optgroup option', { timeout: 10_000 })
       const placeOption = await viewer.$eval('.edit-form label::-p-text(Plats) select optgroup option', (option) => (option as HTMLOptionElement).value)
       await viewer.select('.edit-form label::-p-text(Plats) select', placeOption)
@@ -1337,6 +1361,33 @@ try {
       await step('Ändringen finns kvar', waitForText(viewer, 'Foto: Ändrad i test'))
       await clickButton(viewer, 'Redigera')
       assert(!(await viewer.$('.edit-form label:has(> small)')), 'Namnet efterfrågas igen')
+
+      // Spara AI-taggen: taggen hamnar i config.json med bilden som exempel,
+      // bilderna får den, och redigeringen ligger kvar. Testbanken återställs efteråt.
+      const configBefore = (await readOpfs(viewer, `${bank}/app-data/config.json`))!
+      const indexBefore = (await readOpfs(viewer, `${bank}/app-data/index.json`))!
+      try {
+        await viewer.type('.edit-form .add-tag input', 'testlikt')
+        await viewer.keyboard.press('Enter')
+        await viewer.waitForSelector('.edit-form .similar-button', { timeout: 5_000 })
+        await viewer.click('.edit-form .similar-button')
+        await viewer.waitForSelector('.similar-panel .tag-hits', { timeout: 30_000 })
+        await clickButton(viewer, 'Spara AI-taggen')
+        await step('AI-taggen sparad', viewer.waitForFunction(() => !document.querySelector('.similar-panel'), { timeout: 60_000 }))
+        const config = JSON.parse((await readOpfs(viewer, `${bank}/app-data/config.json`))!) as BankConfig
+        const saved = config.aiTags.find((tag) => tag.tag === 'testlikt')
+        assert(JSON.stringify(saved?.examples) === JSON.stringify([edited.id]), `config.json: ${JSON.stringify(saved)}`)
+        const after = JSON.parse((await readOpfs(viewer, `${bank}/app-data/index.json`))!) as IndexFile
+        assert(after.images.find((image) => image.id === edited.id)!.aiTags.includes('testlikt'), 'Bilden fick inte AI-taggen')
+        await step('Redigeringen kvar', viewer.waitForSelector('.detail-info.editing .edit-form .chip.ai[data-tag="testlikt"]', { timeout: 10_000 }))
+        assert(
+          (await viewer.$$('.edit-form .chip[data-tag="testlikt"]')).length === 1 && !(await viewer.$('.edit-form .similar-button')),
+          'Taggen visas två gånger, eller knappen finns kvar',
+        )
+      } finally {
+        await writeOpfs(viewer, `${bank}/app-data/config.json`, configBefore)
+        await writeOpfs(viewer, `${bank}/app-data/index.json`, indexBefore)
+      }
     } finally {
       await viewer.close()
     }

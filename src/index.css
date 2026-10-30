@@ -245,6 +245,59 @@ button.primary {
   grid-template-columns: 1fr 340px;
 }
 
+/* Panelen för liknande bilder ligger över fotot. Redigeringen syns bredvid. */
+.detail-preview,
+.similar-panel {
+  grid-area: 1 / 1;
+}
+
+.detail-info {
+  grid-area: 1 / 2;
+}
+
+.similar-panel {
+  z-index: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  background: #fff;
+}
+
+.similar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.similar-header h3 {
+  margin: 0;
+}
+
+.similar-actions {
+  position: sticky;
+  bottom: -1rem;
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem -1.25rem -1rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+.similar-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.similar-button {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+}
+
 .detail::backdrop {
   background: rgb(0 0 0 / 0.6);
 }
@@ -478,6 +531,14 @@ button.primary {
   .detail[open] {
     grid-template-columns: 1fr;
     grid-template-rows: 45% 1fr;
+  }
+
+  .detail-info {
+    grid-area: 2 / 1;
+  }
+
+  .similar-panel {
+    grid-area: 1 / 1 / 3 / 2;
   }
 }
 
