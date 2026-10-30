@@ -593,8 +593,13 @@ button.primary {
   gap: 0.15rem;
 }
 
-.tag-thumbs img,
-.tag-thumbs span {
+.tag-thumb {
+  position: relative;
+}
+
+.tag-thumb img,
+.tag-thumb > span:first-child {
+  display: block;
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
@@ -602,10 +607,110 @@ button.primary {
   background: var(--surface);
 }
 
+.tag-thumb .mark-new,
+.tag-thumb .mark-lost {
+  position: absolute;
+  top: 0.25rem;
+  left: 0.25rem;
+}
+
+.mark-new,
+.mark-lost {
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.mark-new {
+  background: #1b7a3a;
+}
+
+.mark-lost {
+  background: var(--blocked);
+}
+
+.tag-thumb-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
 .tag-thumbs small {
   color: var(--muted);
   font-size: 0.75rem;
-  text-align: center;
+}
+
+.tag-thumbs button.example {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+.tag-thumbs button.example.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.missing-example {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.tag-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+
+.tag-option input {
+  margin-top: 0.25rem;
+}
+
+.tag-kind {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.tag-examples {
+  margin-top: 1.25rem;
+}
+
+.tag-examples h4 {
+  margin: 0 0 0.25rem;
+}
+
+.tag-explain {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tag-saved {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.near-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.near-tags button {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+.tag-thumbs.untagged {
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
 }
 
 .tag-line {

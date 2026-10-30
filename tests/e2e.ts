@@ -1264,17 +1264,32 @@ try {
     await selectTag('ingen')
     await clickButton(page, 'Ta bort taggen')
     await waitForText(page, 'Tas bort när du sparar: ingen')
+
+    // Bilder som inte når någon gräns: de med negativt värde för röd.
+    await clickButton(page, 'Bilder utan AI-taggar')
+    await page.waitForFunction(() => /når inte gränsen/.test(document.querySelector('.tag-untagged .tag-hits')?.textContent ?? ''), {
+      timeout: 60_000,
+    })
+    const [untagged, total] = (await page.$eval('.tag-untagged .tag-hits', (element) => element.textContent!))
+      .match(/[\d\s ]+(?= av)|(?<=av )[\d\s ]+/g)!
+      .map((value) => Number(value.replace(/\D/g, '')))
+    assert(untagged === total - red, `${untagged} bilder utan taggar, väntade ${total - red}`)
+    assert((await page.$$('.tag-untagged .tag-thumbs > li')).length === untagged, 'Fel antal bilder i listan')
+
+    // Utan Minst en tagg per bild får de bilderna inga AI-taggar.
+    await page.click('.tag-option input')
     await clickButton(page, 'Spara ändringar')
     await waitForText(page, 'Sparat.', 120_000)
 
     const config = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
     assert(
-      JSON.stringify(config.aiTags) ===
-        JSON.stringify([
-          { tag: 'röd', prompt: 'a red image', threshold: 0 },
-          { tag: 'alla', prompt: 'a photo', threshold: 0.15 },
-        ]),
-      `config.json: ${JSON.stringify(config.aiTags)}`,
+      config.atLeastOneTag === false &&
+        JSON.stringify(config.aiTags) ===
+          JSON.stringify([
+            { tag: 'röd', prompt: 'a red image', threshold: 0 },
+            { tag: 'alla', prompt: 'a photo', threshold: 0.15 },
+          ]),
+      `config.json: ${JSON.stringify(config)}`,
     )
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
     const withRed = index.images.filter((image) => image.aiTags.includes('röd')).length
@@ -1284,6 +1299,39 @@ try {
       JSON.stringify(await tagVectorFiles(page, bank)) === JSON.stringify([index.aiTagging!.file]),
       `Gamla textvektorer ligger kvar: ${await tagVectorFiles(page, bank)}`,
     )
+
+    // En exempelbild: taggen hittar bilder som liknar den, med gränsen på bildskalan.
+    await selectTag('röd')
+    await page.waitForSelector('.tag-images .tag-thumbs > li', { timeout: 30_000 })
+    const example = await page.$eval('.tag-images .tag-thumbs > li', (element) => element.getAttribute('data-id')!)
+    await page.click(`.tag-images .tag-thumbs > li[data-id="${example}"] button.example`)
+    await waitForText(page, 'Gräns: 0,800')
+    assert((await hits()) > 0, 'Ingen bild liknar exempelbilden')
+    // Med Minst en tagg per bild får alla bilder en tagg.
+    await page.click('.tag-option input')
+    await clickButton(page, 'Spara ändringar')
+    await waitForText(page, 'Sparat.', 120_000)
+    const withExample = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    const redTag = withExample.aiTags.find((tag: { tag: string }) => tag.tag === 'röd')
+    assert(
+      withExample.atLeastOneTag === true && redTag.threshold === 0.8 && JSON.stringify(redTag.examples) === JSON.stringify([example]),
+      `config.json: ${JSON.stringify(withExample)}`,
+    )
+    const exampleIndex = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    assert(
+      exampleIndex.images.find((image) => image.id === example)!.aiTags.includes('röd'),
+      'Exempelbilden fick inte taggen',
+    )
+    const withoutTags = exampleIndex.images.filter((image) => !image.previewProblem && !image.aiTags.length)
+    assert(!withoutTags.length, `${withoutTags.length} bilder saknar AI-taggar fast Minst en tagg per bild är på`)
+
+    // De förvalda taggarna läggs till, och de egna taggarna röd och alla finns kvar.
+    const defaultCount = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8')).aiTags.length as number
+    await clickButton(page, 'Använd förvalda taggar och gränser')
+    await waitForText(page, `${(defaultCount + 2).toLocaleString('sv-SE')} taggar`)
+    await waitForText(page, 'Du har ändringar som inte är sparade')
+    await clickButton(page, 'Ångra ändringar')
+    await page.waitForFunction(() => document.querySelector('.tag-count')?.textContent === '2 taggar', { timeout: 5_000 })
 
     // Importen ser att taggarna redan är satta.
     await clickButton(page, 'Importera bilder')

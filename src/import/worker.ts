@@ -10,7 +10,14 @@ import { decodeVectors, encodeVectors, type Vectors } from '../ai/embeddings.ts'
 import { hasModel, imageEmbedding, visionDevice, type Device } from '../ai/model.ts'
 import { MODEL } from '../ai/modelInfo.ts'
 import { configKey, DEFAULT_CONFIG, parseConfig, readConfig } from '../ai/tagConfig.ts'
-import { applyTags, promptVectors, removeOldTagVectors, saveTagVectors, storedPromptVectors } from '../ai/tagging.ts'
+import {
+  applyTags,
+  promptsOf,
+  promptVectors,
+  removeOldTagVectors,
+  saveTagVectors,
+  storedPromptVectors,
+} from '../ai/tagging.ts'
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
@@ -443,7 +450,7 @@ async function setAiTags(current: Session, appData: FileSystemDirectoryHandle, i
     // Den tar några åt gången, så att importen går att avbryta.
     const vectors = await promptVectors(
       current.bank,
-      config.aiTags.map((tag) => tag.prompt),
+      promptsOf(config),
       await storedPromptVectors(appData, current.tagging),
       async (done, total) => {
         await breathe()

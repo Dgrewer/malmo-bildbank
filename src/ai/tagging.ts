@@ -10,7 +10,15 @@ import { readFile, removeFile, writeFile } from '../fs/folder.ts'
 import { decodeVectors, encodeVectors, type Vectors } from './embeddings.ts'
 import { textEmbeddings } from './model.ts'
 import { MODEL } from './modelInfo.ts'
-import { configKey, tagsFor, type BankConfig } from './tagConfig.ts'
+import {
+  configKey,
+  hasExamples,
+  tagsFor,
+  TEXT_RANGE,
+  type AiTag,
+  type BankConfig,
+  type TagVector,
+} from './tagConfig.ts'
 
 export type PromptVectors = Map<string, Float32Array>
 
@@ -56,12 +64,44 @@ export async function promptVectors(
   return result
 }
 
+// Prompterna som behöver textvektorer, var och en en gång.
+export function promptsOf(config: BankConfig): string[] {
+  return [...new Set(config.aiTags.map((tag) => tag.prompt).filter(Boolean))]
+}
+
+// Medelvärdet av exempelbildernas vektorer, normaliserat. null om ingen av
+// bilderna har en vektor, t.ex. för att de har tagits bort.
+export function exampleVector(examples: string[], imageVectors: Vectors): Float32Array | null {
+  const found = examples.map((id) => imageVectors.get(id)).filter((vector) => !!vector)
+  if (!found.length) return null
+  const sum = new Float32Array(found[0].length)
+  for (const vector of found) for (let i = 0; i < sum.length; i++) sum[i] += vector[i]
+  const length = Math.hypot(...sum) || 1
+  return sum.map((value) => value / length)
+}
+
+// Vektorn som bilderna jämförs med för en tagg: exempelbildernas om de finns,
+// annars promptens. null om taggen inte går att använda.
+export function tagVector(tag: AiTag, imageVectors: Vectors, vectors: PromptVectors): TagVector | null {
+  const examples = hasExamples(tag) ? exampleVector(tag.examples!, imageVectors) : null
+  const vector = examples ?? (tag.prompt ? vectors.get(tag.prompt) : undefined)
+  if (!vector) return null
+  // En tagg vars exempelbilder alla har försvunnit använder prompten, med ett
+  // tröskelvärde som passar text.
+  const threshold = examples || !hasExamples(tag) ? tag.threshold : TEXT_RANGE.start
+  return { tag: tag.tag, threshold, vector, examples: !!examples }
+}
+
+export function tagVectors(config: BankConfig, imageVectors: Vectors, vectors: PromptVectors): TagVector[] {
+  return config.aiTags.map((tag) => tagVector(tag, imageVectors, vectors)).filter((tag) => !!tag)
+}
+
 // Sätter aiTags på bilderna. Bilder utan AI-vektor får inga AI-taggar.
 export function applyTags(images: ImageRecord[], imageVectors: Vectors, config: BankConfig, vectors: PromptVectors) {
-  const tags = config.aiTags.map((tag) => ({ tag: tag.tag, threshold: tag.threshold, vector: vectors.get(tag.prompt)! }))
+  const tags = tagVectors(config, imageVectors, vectors)
   for (const image of images) {
     const vector = imageVectors.get(image.id)
-    image.aiTags = vector && !image.previewProblem ? tagsFor(vector, tags) : []
+    image.aiTags = vector && !image.previewProblem ? tagsFor(vector, tags, config.atLeastOneTag) : []
   }
 }
 
@@ -72,7 +112,7 @@ export async function saveTagVectors(
   vectors: PromptVectors,
 ): Promise<IndexAiTagging> {
   const key = await configKey(config)
-  const prompts = [...new Set(config.aiTags.map((tag) => tag.prompt))]
+  const prompts = promptsOf(config)
   const file = `ai-taggar-${key}.bin`
   const rows: Vectors = new Map(prompts.map((prompt, n) => [formatId(n + 1), vectors.get(prompt)!]))
   await writeFile(appData, file, new Blob([encodeVectors(rows, MODEL.dimensions)]))

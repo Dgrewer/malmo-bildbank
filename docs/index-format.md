@@ -123,29 +123,41 @@ Filen är binär. Alla tal är little-endian.
 
 Importen sätter AI-taggar på bilderna utifrån taggarna i `config.json`. Saknas filen skapar importen den med de förvalda taggarna (`src/ai/defaultConfig.json`, cirka 250 taggar).
 
-Taggarna ändras i appen under Admin, fliken AI-taggar. Där väljer man en tagg och ser bilderna sorterade efter hur väl de stämmer med beskrivningen, med ett streck vid gränsen. Man flyttar gränsen med ett reglage, ändrar beskrivningen, lägger till och tar bort taggar. När man sparar skrivs `config.json` och alla bilder får nya AI-taggar direkt, utan import. Filen går också att ändra för hand.
+Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ändra för hand.
+
+- Man väljer en tagg och ser bilderna sorterade efter hur väl de stämmer, med ett streck vid gränsen. Gränsen flyttas med ett reglage. Bilder som får taggen när man sparar märks "ny", och bilder som tappar den märks "försvinner".
+- Allt är en förhandsvisning tills man trycker Spara ändringar. Då skrivs `config.json` och alla bilder får nya AI-taggar direkt, utan import.
+- Man kan lägga till och ta bort taggar och ändra namn och beskrivning.
+- Exempelbilder: man klickar på Exempel under bilder som visar motivet. Taggen hittar då bilder som liknar dem, i stället för att läsa beskrivningen. Det passar för byggnader och platser som modellen inte känner igen med namn, t.ex. Malmöhus eller Triangeln. Nya bilder som importeras får taggen automatiskt.
+- Bilder utan AI-taggar: visar bilderna som inte når gränsen för någon tagg, med de tre taggar de ligger närmast. Ett klick på en tagg öppnar den.
+- Minst en tagg per bild: en bild som inte når någon gräns får ändå den tagg den ligger närmast.
 
 ```json
 {
   "version": 1,
+  "atLeastOneTag": true,
   "aiTags": [
-    { "tag": "cykel", "prompt": "a photo of a bicycle", "threshold": 0.06 }
+    { "tag": "cykel", "prompt": "a photo of a bicycle", "threshold": 0.045 },
+    { "tag": "Malmöhus", "prompt": "", "threshold": 0.8, "examples": ["MB-000012", "MB-000085"] }
   ]
 }
 ```
 
+`atLeastOneTag` (standard `true`): en bild som inte når gränsen för någon tagg får ändå den tagg den ligger närmast, räknat i andel av reglagets omfång så att text- och exempeltaggar går att jämföra.
+
 | Fält | Beskrivning |
 |---|---|
 | `tag` | Taggen som den visas i appen, på svenska. |
-| `prompt` | Det textmodellen jämför bilden med, på engelska, eftersom modellen förstår engelska bäst. |
-| `threshold` | Lägsta likhet mellan bildens och promptens AI-vektorer (skalärprodukt, normalt mellan −0,1 och 0,15) för att bilden ska få taggen. Högre värde ger färre men säkrare taggar. |
+| `prompt` | Det textmodellen jämför bilden med, på engelska, eftersom modellen förstår engelska bäst. Får vara tom om taggen har exempelbilder. |
+| `threshold` | Lägsta likhet för att bilden ska få taggen (skalärprodukt mellan normaliserade vektorer). Mot en prompt ligger likheten normalt mellan −0,1 och 0,15, och reglaget går från 0 till 0,15. Mot exempelbilder ligger den mellan 0,5 och 1, och reglaget går från 0,5 till 1. Högre värde ger färre men säkrare taggar. |
+| `examples` | Valfri. Id för bilder som visar motivet. Bilderna jämförs då med medelvärdet av exempelbildernas AI-vektorer i stället för med prompten. Har alla exempelbilder tagits bort används prompten med gränsen 0,05. |
 
 - En bild får alla taggar vars likhet är minst `threshold`. Bilder utan AI-vektor får inga AI-taggar.
 - Taggar som saknar något fält, eller som redan finns tidigare i listan, används inte. Importen säger hur många det var.
 - Taggarnas textvektorer sparas i `ai-taggar-<fingeravtryck>.bin`, en rad per prompt i samma ordning som `aiTagging.prompts` i indexet. Nya bilder taggas då utan att textmodellen körs, och bara nya eller ändrade prompter behöver räknas ut. Filen byter namn när taggarna ändras, och gamla filer tas bort när det nya indexet är sparat.
 - Har `config.json` ändrats för hand sätts AI-taggarna om för alla bilder vid nästa import. Förhandsvisningen säger det. Bildernas AI-vektorer räknas inte om.
 - Två taggar med samma prompt och tröskelvärde hamnar alltid på samma bilder. Så är solnedgång och soluppgång gjorda, eftersom modellen inte kan se skillnad på dem och man ska hitta alla bilderna oavsett vilket ord man söker på.
-- Förvalda tröskelvärden: 0,06, högre för allmänna taggar som "himmel" och "hamn" som annars hamnar på många bilder, och 0,05 för "kvinna" och "man" eftersom personer ofta är en liten del av bilden. De är kalibrerade mot testbilderna och kan behöva justeras för den riktiga bildbanken.
+- Förvalda tröskelvärden: taggens medianvärde över testbilderna plus 0,03, men minst 0,04. Allmänna taggar som "himmel" och "hamn" får då en högre gräns, eftersom de annars hamnar på många bilder. Testbilderna får i snitt 6 taggar. Gränsen för "flygbild" stämmer med drönarbilderna (filnamn DJI_) i testdata. Gränserna kan behöva justeras för den riktiga bildbanken, under Admin, AI-taggar.
 - De förvalda taggarna beskriver motiv, platser, byggnader (även kyrka, moské och synagoga), personer (kvinna, man, barn, ungdomar, äldre, rullstol), aktiviteter (även demonstration), årstider och bildtyper. Det finns inga taggar för etnicitet eller hälsa.
 
 ## Import
