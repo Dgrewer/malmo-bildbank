@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FIELDS, type Edit, type FieldValues } from '../catalog/edits.ts'
-import type { Place } from '../catalog/places.ts'
+import { placeParts, type Place } from '../catalog/places.ts'
 import { CONSENT_TEXT } from '../catalog/rights.ts'
 import type { Consent, ImageRecord } from '../catalog/types.ts'
 import { suggestTags, wordKey, type ShownTag, type Vocabulary } from '../catalog/vocabulary.ts'
 import { loadUserName, saveUserName } from '../fs/folderStore.ts'
+import { loadAreas, loadNamedPlaces, type NamedPlace } from '../places/load.ts'
 
 interface Props {
   image: ImageRecord
@@ -18,7 +19,7 @@ interface Props {
 type Districts = { district: string; subdistricts: string[] }[]
 
 async function loadDistricts(): Promise<Districts> {
-  const areas = (await import('../places/malmo-areas.json')).default
+  const areas = await loadAreas()
   return areas.districts
     .map((district) => ({
       district: district.name,
@@ -30,7 +31,7 @@ async function loadDistricts(): Promise<Districts> {
     .sort((a, b) => a.district.localeCompare(b.district, 'sv'))
 }
 
-const placeValue = (place: Place | null) => (place ? JSON.stringify([place.district, place.subdistrict]) : '')
+const placeValue = (place: Place | null) => (place ? JSON.stringify([place.district, place.subdistrict, place.name ?? null]) : '')
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
@@ -51,6 +52,8 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
   const [user, setUser] = useState<string | null>(null)
   const [savedUser, setSavedUser] = useState('')
   const [districts, setDistricts] = useState<Districts>([])
+  const [namedPlaces, setNamedPlaces] = useState<NamedPlace[]>([])
+  const [placeText, setPlaceText] = useState(image.place?.name ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -63,6 +66,7 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
       () => setUser(''),
     )
     loadDistricts().then(setDistricts, () => setDistricts([]))
+    loadNamedPlaces().then(setNamedPlaces, () => setNamedPlaces([]))
   }, [])
 
   const set = <F extends keyof FieldValues>(field: F, value: FieldValues[F]) =>
@@ -168,17 +172,20 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
           value={placeValue(values.place)}
           onChange={(event) => {
             const value = event.target.value
-            if (!value) return set('place', null)
-            const [district, subdistrict] = JSON.parse(value) as [string, string | null]
-            set('place', { district, subdistrict })
+            if (!value) {
+              setPlaceText('')
+              return set('place', null)
+            }
+            const [district, subdistrict, name] = JSON.parse(value) as [string, string | null, string | null]
+            setPlaceText(name ?? '')
+            set('place', { district, subdistrict, name })
           }}
         >
           <option value="">Ingen plats</option>
-          {values.place && !districts.some((group) => group.subdistricts.includes(values.place!.subdistrict ?? '')) && (
-            <option value={placeValue(values.place)}>
-              {values.place.subdistrict ? `${values.place.subdistrict}, ${values.place.district}` : values.place.district}
-            </option>
-          )}
+          {values.place &&
+            (values.place.name || !districts.some((group) => group.subdistricts.includes(values.place!.subdistrict ?? ''))) && (
+              <option value={placeValue(values.place)}>{placeParts(values.place).join(', ')}</option>
+            )}
           {districts.map((group) => (
             <optgroup key={group.district} label={group.district}>
               {group.subdistricts.map((subdistrict) => (
@@ -189,6 +196,29 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone }: Props) {
             </optgroup>
           ))}
         </select>
+      </label>
+      <label>
+        Torg eller park
+        <input
+          type="text"
+          list="edit-named-places"
+          placeholder="T.ex. Stortorget"
+          value={placeText}
+          onChange={(event) => {
+            const text = event.target.value
+            setPlaceText(text)
+            // Ett namn ur listan ger också delområdet och stadsområdet.
+            const wanted = text.trim().toLocaleLowerCase('sv')
+            const found = namedPlaces.find((named) => named.label.toLocaleLowerCase('sv') === wanted)
+            if (found) set('place', found.place)
+            else if (!wanted && values.place?.name) set('place', { ...values.place, name: null })
+          }}
+        />
+        <datalist id="edit-named-places">
+          {namedPlaces.map((named) => (
+            <option key={named.label} value={named.label} />
+          ))}
+        </datalist>
       </label>
       <div className="edit-tags">
         <span className="edit-label">Taggar</span>

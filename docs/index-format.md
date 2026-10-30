@@ -84,7 +84,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
 | `durationSeconds` | tal eller `null` | Längd i sekunder för video, `null` för bilder. För video är `width` och `height` filmens bildstorlek och `takenAt` inspelningstiden. Appen läser äldre index utan fältet som `null`. |
 | `gps` | objekt eller `null` | GPS-positionen ur EXIF, `{"latitude": 55.6056, "longitude": 13.0006}` i WGS84 med sex decimaler. `null` om bilden saknar position, och alltid `null` för video. Saknas fältet (index från före platserna) läser nästa import positionen ur originalet, även för oförändrade filer. |
-| `place` | objekt eller `null` | Stadsområde och delområde, `{"district": "Innerstaden", "subdistrict": "Davidshall"}`. Räknas ut från `gps` vid varje import, mot Malmö stads områden i `src/places/malmo-areas.json`. `null` utan GPS eller utanför Malmö. `subdistrict` är `null` om positionen inte ligger i något delområde. Appen läser äldre index utan fältet som `null`. |
+| `place` | objekt eller `null` | Stadsområde, delområde och torg eller park, `{"district": "Norr", "subdistrict": "Gamla Staden", "name": "Stortorget"}`. Räknas ut från `gps` vid varje import, mot Malmö stads områden i `src/places/malmo-areas.json`. `null` utan GPS eller utanför Malmö. `subdistrict` är `null` om positionen inte ligger i något delområde, och `name` är `null` om bilden inte är tagen i eller inom 30 meter från ett torg eller en park. Appen läser äldre index utan fältet som `null`. |
 | `previewProblem` | sträng eller `null` | Varför miniatyr och förhandsbild saknas, skrivet för den som ska åtgärda det. `null` när de finns. Då är `width` och `height` 0, och appen visar en !-ikon med förklaringen. Appen läser äldre index utan fältet som `null`. |
 | `hash` | sträng eller `null` | Snabbt fingeravtryck av originalet: `q1-` och SHA-256 i hex av filens storlek (8 byte, big-endian) följd av filens första och sista 4 MB, eller hela filen om den är högst 8 MB. För ett RAW-par är det SHA-256 av de två filernas fingeravtryck, åtskilda av radbrytning. Används för att känna igen flyttade och omdöpta filer. `null` i index från före importen i appen. |
 | `fileSize`, `fileModified` | heltal eller `null` | Originalets storlek i byte och ändringstid i millisekunder sedan 1970. Är båda oförändrade återanvänds `hash` utan att filen läses. |
@@ -173,6 +173,7 @@ Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-tag
 | `excluded` | Valfri. Id för bilder som inte ska ha taggen. De och bilder vars AI-vektor har minst likheten 0,95 med någon av dem får inte taggen, inte heller med `atLeastOneTag`. En bild står inte i både `examples` och `excluded`. |
 | `synonyms` | Valfri. Andra ord för samma sak: synonymer, engelska ord och felstavningar. Ett taggnamn går före en synonym till en annan tagg. |
 | `related` | Valfri. Namn på taggar som hör ihop med den här, t.ex. `["kafé"]` för restaurang. Det räcker att det står på en av taggarna. |
+| `place` | Valfri. Torget eller parken där motivet finns, som `place` i indexet, t.ex. `{"district": "Norr", "subdistrict": "Gamla Staden", "name": "Stortorget"}` för Malmö rådhus. Väljs i Admin, AI-taggar, under Plats. Påverkar inte vilka AI-taggar bilderna får. |
 | `included` | Valfri. Id för bilder som har fått taggen för hand. De och bilder som är nästan likadana (minst 0,95) får taggen oavsett värde. `excluded` går före `included` för samma bild, och en rättning av bilden själv går före en rättning av en liknande bild. |
 
 - En bild får alla taggar vars likhet är minst `threshold`, utom taggar där den är utesluten genom `excluded`. Bilder utan AI-vektor får inga AI-taggar.
@@ -185,9 +186,15 @@ Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-tag
 
 ## Platser
 
-`src/places/malmo-areas.json` följer med appen och används bara av importen. Den görs av `scripts/make-places.ts` från Malmö stads öppna data (CC0, https://opendata-api.malmo.se): Stadsområden (GeoJSON, WGS84) och Delområden (TopoJSON, WGS84). Namnen skrivs om från versaler, t.ex. "VÄSTRA HAMNEN" till "Västra Hamnen". Koordinaterna avrundas till ungefär en meter. Ändras områdena: hämta filerna igen, kör skriptet och importera, så räknas platsen om för alla bilder.
+`src/places/malmo-areas.json` följer med appen och används bara av importen. Den görs av `scripts/make-places.ts` från Malmö stads öppna data (CC0, https://opendata-api.malmo.se): Stadsområden (GeoJSON, WGS84), Delområden (TopoJSON, WGS84) och Parker och Torg (GeoJSON, WGS84). Parker och torg med samma namn och sort blir en plats, och varje delområde, park och torg får stadsområdet (och delområdet) som de flesta av dess hörn ligger i. Galleriet laddar inte filen. Redigera och Admin laddar den först när de behöver den. Namnen skrivs om från versaler, t.ex. "VÄSTRA HAMNEN" till "Västra Hamnen". Koordinaterna avrundas till ungefär en meter. Ändras områdena: hämta filerna igen, kör skriptet och importera, så räknas platsen om för alla bilder.
 
-Platsen kan ändras i detaljvyn. Ändringen sparas i `app-data/edits/` och går före den uträknade platsen.
+Platsen bestäms i den här ordningen:
+
+1. En ändring i detaljvyn (Redigera), sparad i `app-data/edits/`.
+2. GPS-positionen, uträknad vid importen.
+3. En tagg som anger en plats (`place` i `config.json`, t.ex. Malmö rådhus → Stortorget). En bild utan plats får taggens plats. En bild med GPS i samma delområde men utan torg eller park får platsens namn. Det räknas när bildbanken läses in, så det gäller direkt när taggen sparas.
+
+I detaljvyn visas platsen som Stortorget · Gamla Staden · Norr, och ett klick på en del visar alla bilder därifrån.
 
 ## Ändringar: app-data/edits/
 

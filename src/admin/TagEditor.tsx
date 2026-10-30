@@ -31,6 +31,8 @@ import {
 import { readIndexFile } from '../catalog/loadIndex.ts'
 import { buildVocabulary, suggestTags, unknownKeywords, wordKey, type Vocabulary } from '../catalog/vocabulary.ts'
 import type { ImageRecord, IndexFile } from '../catalog/types.ts'
+import type { Place } from '../catalog/places.ts'
+import { loadNamedPlaces, type NamedPlace } from '../places/load.ts'
 import { ensureDirectory, readFile, writeFile } from '../fs/folder.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 import { writeIndexFile } from '../import/indexFiles.ts'
@@ -98,7 +100,7 @@ const toDrafts = (config: BankConfig): Drafts => ({
 const toConfig = (drafts: Drafts): BankConfig => ({
   version: 1,
   atLeastOneTag: drafts.atLeastOneTag,
-  aiTags: drafts.tags.map(({ tag, prompt, threshold, examples, excluded, included, synonyms, related }) => ({
+  aiTags: drafts.tags.map(({ tag, prompt, threshold, examples, excluded, included, synonyms, related, place }) => ({
     tag: tag.trim(),
     prompt: prompt.trim(),
     threshold,
@@ -107,6 +109,7 @@ const toConfig = (drafts: Drafts): BankConfig => ({
     ...(included?.length && { included }),
     ...(synonyms?.length && { synonyms }),
     ...(related?.length && { related }),
+    ...(place && { place }),
   })),
   ...(drafts.hiddenKeywords.length && { hiddenKeywords: drafts.hiddenKeywords }),
 })
@@ -115,7 +118,8 @@ const same = (a: AiTag, b: AiTag) =>
   a.tag === b.tag &&
   a.prompt === b.prompt &&
   a.threshold === b.threshold &&
-  LISTS.every((list) => (a[list] ?? []).join('\n') === (b[list] ?? []).join('\n'))
+  LISTS.every((list) => (a[list] ?? []).join('\n') === (b[list] ?? []).join('\n')) &&
+  a.place?.name === b.place?.name
 // Andra taggar som ett nytt namn liknar eller redan är ett annat ord för.
 function similarTags(name: string, vocabulary: Vocabulary): string[] {
   const wanted = name.trim()
@@ -861,6 +865,7 @@ function TagDetail({
         onAdd={(word) => onChange({ related: [...(draft.related ?? []), vocabulary.byWord.get(wordKey(word))!] })}
         onRemove={onLeaveGroup}
       />
+      <TagPlace place={draft.place} disabled={disabled} onChange={(place) => onChange({ place })} />
 
       <div className="tag-examples">
         <h4>Exempelbilder</h4>
@@ -1504,6 +1509,89 @@ function SplitChip({
         ✕
       </button>
     </span>
+  )
+}
+
+// Platsen där taggens motiv finns, t.ex. Stortorget för Malmö rådhus.
+function TagPlace({
+  place,
+  disabled,
+  onChange,
+}: {
+  place: Place | undefined
+  disabled: boolean
+  onChange: (place: Place | undefined) => void
+}) {
+  const [places, setPlaces] = useState<NamedPlace[]>([])
+  const [text, setText] = useState('')
+  const [problem, setProblem] = useState<string | null>(null)
+  useEffect(() => {
+    loadNamedPlaces().then(setPlaces, () => setPlaces([]))
+  }, [])
+
+  function choose() {
+    const wanted = text.trim().toLocaleLowerCase('sv')
+    const found = places.find((named) => named.label.toLocaleLowerCase('sv') === wanted)
+    if (!found) {
+      setProblem(`Hittar inget torg eller park som heter ”${text.trim()}”. Välj ett namn ur listan.`)
+      return
+    }
+    onChange(found.place)
+    setText('')
+    setProblem(null)
+  }
+
+  return (
+    <div className="word-list tag-place">
+      <h4>Plats</h4>
+      <p className="tag-explain">
+        Torget eller parken där motivet finns, t.ex. Stortorget för Malmö rådhus. Bilder med taggen som saknar GPS får
+        platsen. Har bilden GPS i samma delområde men inget torg eller park, får den platsens namn.
+      </p>
+      {place ? (
+        <p className="tag-place-current">
+          <strong>{place.name}</strong> · {place.subdistrict ? `${place.subdistrict} · ` : ''}
+          {place.district}{' '}
+          <button type="button" disabled={disabled} onClick={() => onChange(undefined)}>
+            Ta bort platsen
+          </button>
+        </p>
+      ) : (
+        <form
+          className="add-tag"
+          onSubmit={(event) => {
+            event.preventDefault()
+            choose()
+          }}
+        >
+          <input
+            type="text"
+            list="named-place-list"
+            placeholder="Välj torg eller park"
+            aria-label="Plats för taggen"
+            value={text}
+            disabled={disabled}
+            onChange={(event) => {
+              setText(event.target.value)
+              setProblem(null)
+            }}
+          />
+          <datalist id="named-place-list">
+            {places.map((named) => (
+              <option key={named.label} value={named.label} />
+            ))}
+          </datalist>
+          <button type="submit" disabled={disabled || !text.trim()}>
+            Välj
+          </button>
+        </form>
+      )}
+      {problem && (
+        <p className="warning" role="alert">
+          {problem}
+        </p>
+      )}
+    </div>
   )
 }
 

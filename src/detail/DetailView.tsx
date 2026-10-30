@@ -3,6 +3,7 @@ import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFo
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import type { Edit } from '../catalog/edits.ts'
+import { placeParts } from '../catalog/places.ts'
 import type { ShownTag, Vocabulary } from '../catalog/vocabulary.ts'
 import { EditForm } from './EditForm.tsx'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
@@ -101,18 +102,22 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </>
         )}
       </div>
-      <div className="detail-info">
+      <div className={isEditing ? 'detail-info editing' : 'detail-info'}>
         <div className="detail-header">
           <h2 id="detail-title">{image.id}</h2>
           <div className="detail-actions">
             <button type="button" onClick={() => dialog.current!.close()}>
               Stäng
             </button>
-            {!isEditing && (
-              <button type="button" onClick={() => setEditing(image.id)}>
-                Redigera
-              </button>
-            )}
+            <button
+              type="button"
+              className={isEditing ? 'edit-toggle editing' : 'edit-toggle'}
+              aria-pressed={isEditing}
+              title={isEditing ? 'Spara eller avbryt för att sluta redigera' : undefined}
+              onClick={() => setEditing(image.id)}
+            >
+              Redigera
+            </button>
           </div>
         </div>
         <div className="detail-nav">
@@ -214,7 +219,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             <dd className="detail-place">
               {image.place ? (
                 <ul className="tag-list">
-                  {[image.place.subdistrict, image.place.district].filter((name) => name !== null).map((name) => (
+                  {placeParts(image.place).map((name) => (
                     <li key={name}>
                       <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
                         {name}

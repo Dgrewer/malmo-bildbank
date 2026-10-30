@@ -3,6 +3,7 @@ import { AdminView } from './admin/AdminView.tsx'
 import { DEFAULT_CONFIG, parseConfig } from './ai/tagConfig.ts'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
+import { placeParts, placeWithTags, type Place } from './catalog/places.ts'
 import { appendEdits, applyEdits, editedTags, loadEdits, mergeEdits, type Edit } from './catalog/edits.ts'
 import { buildVocabulary, shownTags, wordKey, type ShownTag, type Vocabulary } from './catalog/vocabulary.ts'
 import { ensureDirectory, readFile } from './fs/folder.ts'
@@ -13,6 +14,8 @@ interface Catalog {
   // Bilderna som de står i indexet, före användarnas ändringar.
   indexed: ImageRecord[]
   vocabulary: Vocabulary
+  // Platsen för taggar som anger var motivet finns, efter ordlistans nyckel.
+  tagPlaces: Map<string, Place>
   // Alla användares ändringar i app-data/edits/.
   edits: Edit[]
   thumbs: FileSystemDirectoryHandle
@@ -45,6 +48,7 @@ async function loadCatalog(root: FileSystemDirectoryHandle): Promise<Catalog> {
   return {
     indexed: images,
     vocabulary: buildVocabulary(config),
+    tagPlaces: new Map(config.aiTags.filter((tag) => tag.place).map((tag) => [wordKey(tag.tag), tag.place!])),
     edits: await loadEdits(root),
     thumbs: await ensureDirectory(root, 'app-data/thumbs'),
     previews: await ensureDirectory(root, 'app-data/previews'),
@@ -83,16 +87,23 @@ export function Library({ root, onChangeFolder }: Props) {
   const edited = useMemo(() => {
     if (!catalog) return null
     const merged = mergeEdits(catalog.edits)
-    const images = catalog.indexed.map((image) => applyEdits(image, merged))
-    const tags = new Map<string, ShownTag[]>(
-      images.map((image) => [image.id, editedTags(shownTags(image, catalog.vocabulary), merged.tags.get(image.id))]),
-    )
+    const tags = new Map<string, ShownTag[]>()
+    const images = catalog.indexed.map((indexed) => {
+      const image = applyEdits(indexed, merged)
+      const shown = editedTags(shownTags(image, catalog.vocabulary), merged.tags.get(image.id))
+      tags.set(image.id, shown)
+      // En plats som någon har ändrat går före taggarnas.
+      if (merged.fields.get(image.id)?.place !== undefined) return image
+      const fromTags = shown.flatMap((tag) => catalog.tagPlaces.get(wordKey(tag.tag)) ?? [])
+      const place = placeWithTags(image.place, fromTags)
+      return place === image.place ? image : { ...image, place }
+    })
     return { images, tags }
   }, [catalog])
   const shown = useMemo(() => {
     if (!edited || !filter) return edited?.images ?? []
     if (filter.kind === 'place') {
-      return edited.images.filter((image) => image.place?.district === filter.value || image.place?.subdistrict === filter.value)
+      return edited.images.filter((image) => image.place && placeParts(image.place).includes(filter.value))
     }
     const key = wordKey(filter.value)
     return edited.images.filter((image) => edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key))

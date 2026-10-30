@@ -5,6 +5,7 @@
 
 import { readFile, writeFile } from '../fs/folder.ts'
 import defaults from './defaultConfig.json'
+import type { Place } from '../catalog/places.ts'
 
 export interface AiTag {
   // Taggen som den visas i appen, på svenska.
@@ -29,6 +30,9 @@ export interface AiTag {
   // Taggar som hör ihop, t.ex. restaurang och kafé. Har en bild en av dem
   // visas den med alla. Påverkar inte vilka AI-taggar bilderna får.
   related?: string[]
+  // Platsen där motivet finns, t.ex. Stortorget för Malmö rådhus. Bilder med
+  // taggen som saknar GPS får platsen. Påverkar inte vilka AI-taggar bilderna får.
+  place?: Place
 }
 
 export interface BankConfig {
@@ -68,6 +72,9 @@ function cleanTag(value: unknown): AiTag | null {
   const synonyms = words(tag.synonyms)
   const related = words(tag.related)
   if (!prompt && !examples.length) return null
+  const place = tag.place
+  const validPlace =
+    place && typeof place.name === 'string' && typeof place.district === 'string' && (place.subdistrict === null || typeof place.subdistrict === 'string')
   return {
     tag: tag.tag.trim(),
     prompt,
@@ -77,6 +84,7 @@ function cleanTag(value: unknown): AiTag | null {
     ...(included.length && { included }),
     ...(synonyms.length && { synonyms }),
     ...(related.length && { related }),
+    ...(validPlace && { place: { district: place.district, subdistrict: place.subdistrict, name: place.name } }),
   }
 }
 

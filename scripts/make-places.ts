@@ -1,8 +1,9 @@
 // Gör om Malmö stads öppna data (CC0) till src/places/malmo-areas.json, som
 // följer med appen. Kör när områdena har ändrats:
-//   node scripts/make-places.ts <stadsomraden_4326.geojson> <delomraden_epsg4326.json>
+//   node scripts/make-places.ts <stadsomraden_4326.geojson> <delomraden_epsg4326.json> <park_torg.geojson>
 // Filerna hämtas från https://opendata-api.malmo.se, datamängderna
-// "Stadsområden" (GeoJSON 4326) och "Delområden" (TopoJSON 4326).
+// "Stadsområden" (GeoJSON 4326), "Delområden" (TopoJSON 4326) och
+// "Parker och Torg" (GeoJSON 4326).
 import fs from 'node:fs'
 import { placeAt } from '../src/catalog/places.ts'
 
@@ -12,8 +13,11 @@ interface Area {
   code: string
   // Alla ringar i området, även hål, som [lon, lat, lon, lat, …].
   rings: number[][]
-  // För ett delområde: stadsområdet det ligger i.
+  // För ett delområde eller en namngiven plats: stadsområdet det ligger i.
   district?: string
+  // För en namngiven plats: delområdet och sorten, t.ex. Torg eller Park.
+  subdistrict?: string | null
+  kind?: string
 }
 
 // "VÄSTRA HAMNEN" -> "Västra Hamnen"
@@ -39,8 +43,10 @@ function ringsOf(geometry: { type: string; coordinates: unknown }): Ring[] {
   throw new Error(`Okänd geometri: ${geometry.type}`)
 }
 
-const [districtFile, subdistrictFile] = process.argv.slice(2)
-if (!districtFile || !subdistrictFile) throw new Error('Ange stadsområden (GeoJSON) och delområden (TopoJSON).')
+const [districtFile, subdistrictFile, parkFile] = process.argv.slice(2)
+if (!districtFile || !subdistrictFile || !parkFile) {
+  throw new Error('Ange stadsområden (GeoJSON), delområden (TopoJSON) och parker och torg (GeoJSON).')
+}
 
 const geojson = JSON.parse(fs.readFileSync(districtFile, 'utf8'))
 const districts: Area[] = geojson.features.map((feature: { properties: Record<string, string>; geometry: never }) => ({
@@ -80,24 +86,50 @@ const subdistricts: Area[] = collection.geometries.map((geometry) => ({
   ),
 }))
 
-// Stadsområdet som ett delområde ligger i: det som de flesta av dess hörn ligger i.
-for (const subdistrict of subdistricts) {
+// Området som de flesta av ytans hörn ligger i.
+function mostOf(area: Area, pick: (longitude: number, latitude: number) => string | null | undefined): string | null {
   const votes = new Map<string, number>()
-  for (const ring of subdistrict.rings) {
+  for (const ring of area.rings) {
     for (let i = 0; i < ring.length; i += 2) {
-      const district = placeAt({ longitude: ring[i], latitude: ring[i + 1] }, { districts, subdistricts: [] })?.district
-      if (district) votes.set(district, (votes.get(district) ?? 0) + 1)
+      const name = pick(ring[i], ring[i + 1])
+      if (name) votes.set(name, (votes.get(name) ?? 0) + 1)
     }
   }
-  subdistrict.district = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+  return [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+}
+
+for (const subdistrict of subdistricts) {
+  const at = (longitude: number, latitude: number) => placeAt({ longitude, latitude }, { districts, subdistricts: [], named: [] })
+  subdistrict.district = mostOf(subdistrict, (longitude, latitude) => at(longitude, latitude)?.district) ?? ''
   if (!subdistrict.district) console.warn(`${subdistrict.name} ligger inte i något stadsområde`)
+}
+
+// Parker och torg med namn. Ytor med samma namn och sort blir en plats, t.ex.
+// Pildammsparken som består av tre ytor.
+const parks = JSON.parse(fs.readFileSync(parkFile, 'utf8'))
+const byName = new Map<string, Area>()
+for (const feature of parks.features as { properties: Record<string, string>; geometry: never }[]) {
+  const name = feature.properties.Namn?.trim()
+  if (!name || !feature.geometry) continue
+  const kind = feature.properties.Detaljplan_kategori || 'Plats'
+  const key = `${name}\n${kind}`
+  const place = byName.get(key) ?? { name, code: String(feature.properties.ObjectID), kind, rings: [] }
+  place.rings.push(...ringsOf(feature.geometry).map(flat))
+  byName.set(key, place)
+}
+const named = [...byName.values()]
+for (const place of named) {
+  const at = (longitude: number, latitude: number) => placeAt({ longitude, latitude }, { districts, subdistricts, named: [] })
+  place.district = mostOf(place, (longitude, latitude) => at(longitude, latitude)?.district) ?? ''
+  place.subdistrict = mostOf(place, (longitude, latitude) => at(longitude, latitude)?.subdistrict)
 }
 
 const out = {
   source: 'Malmö stad, öppna data (CC0): Stadsområden och Delområden, https://opendata-api.malmo.se',
   districts,
   subdistricts,
+  named: named.filter((place) => place.district),
 }
 fs.mkdirSync('src/places', { recursive: true })
 fs.writeFileSync('src/places/malmo-areas.json', JSON.stringify(out))
-console.log(`${districts.length} stadsområden, ${subdistricts.length} delområden, ${fs.statSync('src/places/malmo-areas.json').size} byte`)
+console.log(`${districts.length} stadsområden, ${subdistricts.length} delområden, ${out.named.length} parker och torg, ${fs.statSync('src/places/malmo-areas.json').size} byte`)

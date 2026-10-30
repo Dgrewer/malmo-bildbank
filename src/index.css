@@ -275,6 +275,12 @@ button.primary {
 .detail-info {
   padding: 1rem 1.25rem;
   overflow-y: auto;
+  /* Genomskinlig ram så att innehållet inte hoppar när den blir röd. */
+  border: 4px solid transparent;
+}
+
+.detail-info.editing {
+  border-color: var(--blocked);
 }
 
 .detail-header {
@@ -401,6 +407,13 @@ button.primary {
   flex-direction: column;
   align-items: stretch;
   gap: 0.35rem;
+}
+
+.edit-toggle.editing,
+.edit-toggle.editing:hover {
+  background: var(--blocked);
+  border-color: var(--blocked);
+  color: #fff;
 }
 
 .edit-form {

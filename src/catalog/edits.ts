@@ -58,7 +58,8 @@ function validValue(field: string, value: unknown): boolean {
         value === null ||
         (typeof value === 'object' &&
           typeof (value as Place).district === 'string' &&
-          ((value as Place).subdistrict === null || typeof (value as Place).subdistrict === 'string'))
+          ((value as Place).subdistrict === null || typeof (value as Place).subdistrict === 'string') &&
+          ((value as Place).name == null || typeof (value as Place).name === 'string'))
       )
     default:
       return false

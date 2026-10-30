@@ -32,7 +32,7 @@ import {
 } from '../src/catalog/fileFormat.ts'
 import { combinedHash, quickHash } from '../src/import/hash.ts'
 import { readMetadata } from '../src/import/metadata.ts'
-import { placeAt } from '../src/catalog/places.ts'
+import { placeAt, placeWithTags } from '../src/catalog/places.ts'
 import { readVideoInfo } from '../src/import/video.ts'
 import UTIF from 'utif2'
 import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
@@ -1298,11 +1298,21 @@ try {
       const placeOption = await viewer.$eval('.edit-form label::-p-text(Plats) select optgroup option', (option) => (option as HTMLOptionElement).value)
       await viewer.select('.edit-form label::-p-text(Plats) select', placeOption)
       await elementScreenshot(viewer, 'dialog.detail[open] .detail-info', '4.8-redigera')
+      // Redigeringsläget syns: röd ram runt uppgifterna och röd Redigera-knapp.
+      const editLook = () =>
+        viewer.$eval('dialog.detail[open] .detail-info', (info) => {
+          const button = info.querySelector('.edit-toggle')!
+          return [getComputedStyle(info).borderTopColor, getComputedStyle(button).backgroundColor, getComputedStyle(button).color].join(' | ')
+        })
+      const editingLook = await editLook()
+      assert(editingLook === 'rgb(179, 38, 30) | rgb(179, 38, 30) | rgb(255, 255, 255)', `Redigeringsläget ser ut så här: ${editingLook}`)
       await clickButton(viewer, 'Spara')
       await step('Sparat', viewer.waitForSelector('dialog.detail[open] .detail-fields', { timeout: 10_000 }))
+      const normalLook = await editLook()
+      assert(normalLook === 'rgba(0, 0, 0, 0) | rgb(255, 255, 255) | rgb(0, 0, 0)', `Efter Spara ser det ut så här: ${normalLook}`)
       const fields = await viewer.$eval('dialog.detail[open] .detail-fields', (element) => (element as HTMLElement).innerText)
       const shownTags = await viewer.$$eval('dialog.detail[open] .detail-tags button', (buttons) => buttons.map((button) => button.textContent))
-      const [district, sub] = JSON.parse(placeOption) as [string, string]
+      const [district, sub] = JSON.parse(placeOption) as [string, string, null]
       assert(
         fields.includes('Foto: Ändrad i test') && shownTags.includes('testtagg') && !shownTags.includes(removedTag) && fields.includes(sub),
         `Detaljvyn efter Spara: ${fields}`,
@@ -1314,7 +1324,7 @@ try {
         lines.every((line) => line.id === edited.id && line.by === 'Testare') &&
           field('byline') === 'Foto: Ändrad i test' &&
           field('consent') === 'missing' &&
-          JSON.stringify(field('place')) === JSON.stringify({ district, subdistrict: sub }) &&
+          JSON.stringify(field('place')) === JSON.stringify({ district, subdistrict: sub, name: null }) &&
           lines.some((line) => line.tag === removedTag && line.on === false) &&
           lines.some((line) => line.tag === 'testtagg' && line.on === true) &&
           !lines.some((line) => line.field === 'terms'),
@@ -1557,6 +1567,18 @@ try {
       console.log('      Ingen bild fick en närmaste tagg, så valen under bilden testades inte')
     }
 
+    // En tagg kan ange en plats: ett torg eller en park ur listan.
+    await selectTag('alla')
+    await page.waitForSelector('.tag-place datalist option', { timeout: 10_000 })
+    await page.type('.tag-place input', 'Finns inte')
+    await page.click('.tag-place button[type="submit"]')
+    await step('okänd plats', waitForText(page, 'Hittar inget torg eller park'))
+    await page.click('.tag-place input', { count: 3 })
+    await page.type('.tag-place input', 'Stortorget')
+    await page.click('.tag-place button[type="submit"]')
+    await step('vald plats', waitForText(page, 'Stortorget · Gamla Staden · Norr'))
+    await clickButton(page, 'Ångra ändringar')
+
     // Okända nyckelord: ett kopplas till taggen alla, ett döljs.
     await clickButton(page, 'Okända nyckelord')
     await page.waitForSelector('.keyword-rows li', { timeout: 30_000 })
@@ -1638,10 +1660,21 @@ try {
     )
     // Kända punkter: Stortorget ligger i Gamla Staden i stadsområde Norr,
     // Turning Torso i Västra Hamnen och Hyllie station i Hyllievång i Väster.
-    const at = (latitude: number, longitude: number) => JSON.stringify(placeAt({ latitude, longitude }, areas))
-    assert(at(55.6056, 13.0006) === '{"district":"Norr","subdistrict":"Gamla Staden"}', `Stortorget: ${at(55.6056, 13.0006)}`)
-    assert(at(55.6131, 12.9758) === '{"district":"Norr","subdistrict":"Västra Hamnen"}', `Turning Torso: ${at(55.6131, 12.9758)}`)
-    assert(at(55.5636, 12.9757) === '{"district":"Väster","subdistrict":"Hyllievång"}', `Hyllie: ${at(55.5636, 12.9757)}`)
+    const at = (latitude: number, longitude: number) => placeAt({ latitude, longitude }, areas)
+    const parts = (latitude: number, longitude: number) => {
+      const place = at(latitude, longitude)
+      return place && [place.name, place.subdistrict, place.district].join(' · ')
+    }
+    assert(parts(55.6056, 13.0006) === 'Stortorget · Gamla Staden · Norr', `Stortorget: ${parts(55.6056, 13.0006)}`)
+    assert(at(55.6131, 12.9758)?.subdistrict === 'Västra Hamnen', `Turning Torso: ${parts(55.6131, 12.9758)}`)
+    assert(at(55.5636, 12.9757)?.subdistrict === 'Hyllievång', `Hyllie: ${parts(55.5636, 12.9757)}`)
+    // Taggar som anger en plats: GPS går före, men får namnet i samma delområde.
+    const stortorget = { district: 'Norr', subdistrict: 'Gamla Staden', name: 'Stortorget' }
+    const kyrkogatan = { district: 'Norr', subdistrict: 'Gamla Staden', name: null }
+    const hyllie = { district: 'Väster', subdistrict: 'Hyllievång', name: null }
+    assert(JSON.stringify(placeWithTags(null, [stortorget])) === JSON.stringify(stortorget), 'Utan GPS')
+    assert(placeWithTags(kyrkogatan, [stortorget])?.name === 'Stortorget', 'GPS i samma delområde')
+    assert(placeWithTags(hyllie, [stortorget]) === hyllie, 'GPS i ett annat delområde')
     assert(placeAt({ latitude: 59.3293, longitude: 18.0686 }, areas) === null, 'Stockholm fick en plats i Malmö')
     // Filmens längd och inspelningstid jämförs med vad ffmpeg gav (testdata/app-data).
     const old: IndexFile = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8'))
