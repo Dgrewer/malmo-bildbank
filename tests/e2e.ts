@@ -1446,6 +1446,15 @@ try {
       const nearestChip = `.image-tags > li[data-id="${nearest[0]}"] .chip[data-tag="${nearest[1]}"]`
       await page.click(`${nearestChip} .split-keep`)
       await step('vald närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-keep`, { timeout: 30_000 }))
+      // Det valda namnet ska synas: grön bakgrund och vit text, även med musen kvar över det.
+      const keepStyle = await page.$eval(`${nearestChip} .split-keep`, (element) => {
+        const style = getComputedStyle(element)
+        return [style.backgroundColor, style.color, element.textContent]
+      })
+      assert(
+        keepStyle[0] === 'rgb(31, 157, 69)' && keepStyle[1] === 'rgb(255, 255, 255)' && keepStyle[2] === nearest[1],
+        `Det valda namnet syns inte: ${keepStyle}`,
+      )
       await page.click(`${nearestChip} .split-remove`)
       await step('borttagen närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-remove`, { timeout: 30_000 }))
       await page.click(`${nearestChip} .split-remove`)
