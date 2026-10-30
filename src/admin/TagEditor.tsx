@@ -3,25 +3,29 @@ import { decodeVectors, type Vectors } from '../ai/embeddings.ts'
 import { hasModel, textEmbeddings } from '../ai/model.ts'
 import { MODEL } from '../ai/modelInfo.ts'
 import {
+  decide,
   DEFAULT_CONFIG,
   EXAMPLE_RANGE,
   hasExamples,
-  margin,
+  isBlocked,
+  override,
   parseConfig,
   similarity,
   TEXT_RANGE,
   type AiTag,
   type BankConfig,
+  type Override,
 } from '../ai/tagConfig.ts'
 import {
+  applyTags,
   exampleVector,
   promptsOf,
   promptVectors,
   removeOldTagVectors,
   saveTagVectors,
   storedPromptVectors,
-  tagVectors,
-  applyTags,
+  tagVector,
+  vectorsOf,
   type PromptVectors,
 } from '../ai/tagging.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
@@ -52,6 +56,7 @@ interface Draft extends AiTag {
 interface Drafts {
   atLeastOneTag: boolean
   tags: Draft[]
+  hiddenKeywords: string[]
 }
 
 type Loaded = {
@@ -70,6 +75,13 @@ type LoadState = { kind: 'loading' } | { kind: 'error'; message: string } | { ki
 const SHOWN_ABOVE = 48
 const SHOWN_BELOW = 24
 const UNTAGGED = -1
+const ALL_IMAGES = -2
+// Bilder som visas åt gången i bildvyerna.
+const PAGE = 60
+// Beskrivningar som textmodellen tar åt gången i adminvyn. Modellen körs i
+// sidan, och mellan varje omgång hinner sidan svara på klick.
+const UI_CHUNK = 4
+const breathe = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const count = (n: number) => n.toLocaleString('sv-SE')
 const format = (n: number) => n.toLocaleString('sv-SE', { minimumFractionDigits: 3, maximumFractionDigits: 4 })
@@ -79,22 +91,34 @@ let nextKey = 1
 const toDrafts = (config: BankConfig): Drafts => ({
   atLeastOneTag: config.atLeastOneTag,
   tags: config.aiTags.map((tag) => ({ ...tag, key: nextKey++ })),
+  hiddenKeywords: config.hiddenKeywords ?? [],
 })
 const toConfig = (drafts: Drafts): BankConfig => ({
   version: 1,
   atLeastOneTag: drafts.atLeastOneTag,
-  aiTags: drafts.tags.map(({ tag, prompt, threshold, examples }) => ({
+  aiTags: drafts.tags.map(({ tag, prompt, threshold, examples, excluded, included, synonyms, related }) => ({
     tag: tag.trim(),
     prompt: prompt.trim(),
     threshold,
     ...(examples?.length && { examples }),
+    ...(excluded?.length && { excluded }),
+    ...(included?.length && { included }),
+    ...(synonyms?.length && { synonyms }),
+    ...(related?.length && { related }),
   })),
+  ...(drafts.hiddenKeywords.length && { hiddenKeywords: drafts.hiddenKeywords }),
 })
+const LISTS = ['examples', 'excluded', 'included', 'synonyms', 'related'] as const
 const same = (a: AiTag, b: AiTag) =>
   a.tag === b.tag &&
   a.prompt === b.prompt &&
   a.threshold === b.threshold &&
-  (a.examples ?? []).join() === (b.examples ?? []).join()
+  LISTS.every((list) => (a[list] ?? []).join('\n') === (b[list] ?? []).join('\n'))
+// Listan utan id, eller undefined om den blir tom.
+const without = (list: string[] | undefined, id: string) => {
+  const rest = (list ?? []).filter((other) => other !== id)
+  return rest.length ? rest : undefined
+}
 
 async function load(bank: FileSystemDirectoryHandle): Promise<Loaded> {
   if (!(await hasModel(bank))) {
@@ -133,7 +157,16 @@ async function save(
   const imageVectors = file && decodeVectors(await file.arrayBuffer(), MODEL.dimensions)
   if (!index || !imageVectors) throw new Error('Indexet eller AI-vektorerna går inte att läsa.')
   const stored = await storedPromptVectors(appData, index.aiTagging)
-  const vectors = await promptVectors(bank, promptsOf(config), new Map([...stored, ...known]), onProgress)
+  const vectors = await promptVectors(
+    bank,
+    promptsOf(config),
+    new Map([...stored, ...known]),
+    async (done, total) => {
+      onProgress(done, total)
+      await breathe()
+    },
+    UI_CHUNK,
+  )
   await writeFile(appData, 'config.json', `${JSON.stringify(config, null, 2)}\n`)
   applyTags(index.images, imageVectors, config, vectors)
   const updated: IndexFile = { ...index, aiTagging: await saveTagVectors(appData, config, vectors) }
@@ -144,7 +177,7 @@ async function save(
 
 export function TagEditor({ bank, onSaved, onBusy }: Props) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
-  const [drafts, setDrafts] = useState<Drafts>({ atLeastOneTag: true, tags: [] })
+  const [drafts, setDrafts] = useState<Drafts>({ atLeastOneTag: true, tags: [], hiddenKeywords: [] })
   const [selected, setSelected] = useState<number | null>(null)
   const [filter, setFilter] = useState('')
   const [saving, setSaving] = useState<{ done: number; total: number } | null>(null)
@@ -181,6 +214,7 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
   const savedByKey = new Map(data.saved.tags.map((draft) => [draft.key, draft]))
   const dirty =
     drafts.atLeastOneTag !== data.saved.atLeastOneTag ||
+    drafts.hiddenKeywords.join('\n') !== data.saved.hiddenKeywords.join('\n') ||
     drafts.tags.length !== data.saved.tags.length ||
     drafts.tags.some((draft) => !savedByKey.has(draft.key) || !same(draft, savedByKey.get(draft.key)!))
   const problems = validate(drafts.tags)
@@ -212,30 +246,74 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
     setSelected(null)
   }
 
-  // De förvalda taggarna med sina gränser ersätter samma taggar i utkastet,
-  // och förvalda taggar som saknas läggs till. Egna taggar och taggar med
-  // exempelbilder behålls som de är.
+  // De förvalda taggarna får sina förvalda beskrivningar och gränser, och
+  // förvalda taggar som saknas läggs till. Egna taggar, taggar med
+  // exempelbilder och bilder markerade som Inte rätt behålls som de är.
   function applyDefaults() {
-    change((all) => {
-      const defaults = new Map(DEFAULT_CONFIG.aiTags.map((tag) => [tag.tag, tag]))
-      const tags = all.tags.map((draft) => {
-        const fallback = defaults.get(draft.tag.trim())
-        return fallback && !hasExamples(draft) ? { ...draft, prompt: fallback.prompt, threshold: fallback.threshold } : draft
-      })
-      const names = new Set(tags.map((draft) => draft.tag.trim()))
-      for (const tag of DEFAULT_CONFIG.aiTags) {
-        if (!names.has(tag.tag)) tags.push({ ...tag, key: nextKey++ })
-      }
-      return { ...all, tags }
+    const defaults = new Map(DEFAULT_CONFIG.aiTags.map((tag) => [tag.tag, tag]))
+    let reset = 0
+    const tags = drafts.tags.map((draft) => {
+      const fallback = defaults.get(draft.tag.trim())
+      if (!fallback || hasExamples(draft)) return draft
+      if (draft.prompt === fallback.prompt && draft.threshold === fallback.threshold) return draft
+      reset++
+      return { ...draft, prompt: fallback.prompt, threshold: fallback.threshold }
+    })
+    const names = new Set(tags.map((draft) => draft.tag.trim()))
+    const added = DEFAULT_CONFIG.aiTags.filter((tag) => !names.has(tag.tag))
+    for (const tag of added) tags.push({ ...tag, key: nextKey++ })
+    change((all) => ({ ...all, tags }))
+    setMessage({
+      kind: 'done',
+      text:
+        reset || added.length
+          ? `${count(reset)} taggar fick förvalda värden och ${count(added.length)} lades till. Tryck Spara ändringar för att använda dem.`
+          : 'Alla förvalda taggar har redan sina förvalda värden.',
     })
   }
 
-  function selectByName(name: string) {
-    const draft = drafts.tags.find((tag) => tag.tag === name)
-    if (draft) {
-      setSelected(draft.key)
-      setFilter('')
-    }
+  // Ger bilden taggen (on) eller tar bort den, för hand. På en tagg med
+  // exempelbilder blir bilden ett exempel, så att taggen lär sig av den. Finns
+  // ingen tagg med namnet skapas en, med bilden som exempel.
+  function setImageTag(id: string, name: string, on: boolean) {
+    const wanted = name.trim()
+    if (!wanted) return
+    change((all) => {
+      const existing = all.tags.find((draft) => draft.tag.trim().toLowerCase() === wanted.toLowerCase())
+      if (!existing) {
+        if (!on) return all
+        const draft: Draft = { key: nextKey++, tag: wanted, prompt: '', threshold: EXAMPLE_RANGE.start, examples: [id] }
+        return { ...all, tags: [...all.tags, draft] }
+      }
+      const examples = without(existing.examples, id)
+      let patch: Partial<AiTag>
+      if (on && hasExamples(existing)) {
+        patch = {
+          examples: [...(examples ?? []), id],
+          excluded: without(existing.excluded, id),
+          included: without(existing.included, id),
+        }
+      } else if (on) {
+        patch = { included: [...(without(existing.included, id) ?? []), id], excluded: without(existing.excluded, id) }
+      } else {
+        patch = { examples, included: without(existing.included, id), excluded: [...(without(existing.excluded, id) ?? []), id] }
+        // Var bilden det sista exemplet jämförs bilderna med beskrivningen igen.
+        if (!examples && hasExamples(existing)) patch.threshold = TEXT_RANGE.start
+      }
+      return { ...all, tags: all.tags.map((draft) => (draft === existing ? { ...draft, ...patch } : draft)) }
+    })
+  }
+
+  // Ångrar en rättning för hand: bilden får taggen om värdet räcker.
+  function clearImageTag(id: string, name: string) {
+    change((all) => ({
+      ...all,
+      tags: all.tags.map((draft) =>
+        draft.tag === name
+          ? { ...draft, excluded: without(draft.excluded, id), included: without(draft.included, id) }
+          : draft,
+      ),
+    }))
   }
 
   async function saveAll() {
@@ -279,6 +357,11 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           Välj en tagg och flytta reglaget. Bilderna och antalet ändras direkt, men det är bara en förhandsvisning.
           Bildbanken ändras först när du trycker <strong>Spara ändringar</strong>.
         </p>
+        <p>
+          Har en bild fått en tagg som inte stämmer, tryck <strong>Inte rätt</strong> under bilden. Känner AI:n inte igen
+          en byggnad eller plats, tryck <strong>Exempel</strong> under några bilder som visar den. Taggarna gäller för alla som använder bildbanken, och nya bilder
+          taggas automatiskt när de importeras. Varje rättning gör alltså bildbanken bättre för alla.
+        </p>
       </div>
 
       <div className="tag-actions">
@@ -295,13 +378,8 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
         >
           Ångra ändringar
         </button>
-        <button
-          type="button"
-          disabled={!!saving}
-          title="Förvalda taggar får de förvalda gränserna och beskrivningarna, och förvalda taggar som saknas läggs till. Egna taggar och taggar med exempelbilder ändras inte."
-          onClick={applyDefaults}
-        >
-          Använd förvalda taggar och gränser
+        <button type="button" disabled={!!saving} aria-describedby="defaults-help" onClick={applyDefaults}>
+          Återställ förvalda taggar
         </button>
         {saving && (
           <span role="status">
@@ -316,6 +394,12 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           </span>
         )}
       </div>
+      <p className="tag-explain" id="defaults-help">
+        <strong>Återställ förvalda taggar</strong> ger taggarna som följer med bildbanken (som ”flygbild” och ”bro”)
+        tillbaka sina ursprungliga beskrivningar och gränser, och lägger tillbaka förvalda taggar som har tagits bort.
+        Taggar ni har lagt till själva, taggar med exempelbilder och bilder markerade som <strong>Inte rätt</strong>{' '}
+        ändras inte. Inget ändras i bildbanken förrän du trycker Spara ändringar, och Ångra ändringar tar bort det.
+      </p>
       <label className="tag-option">
         <input
           type="checkbox"
@@ -349,6 +433,14 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           >
             Bilder utan AI-taggar
           </button>
+          <button
+            type="button"
+            className={selected === ALL_IMAGES ? 'selected' : undefined}
+            aria-current={selected === ALL_IMAGES}
+            onClick={() => setSelected(ALL_IMAGES)}
+          >
+            Alla bilder och deras taggar
+          </button>
           <input
             type="search"
             placeholder="Sök bland taggarna"
@@ -361,6 +453,7 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
             {shown.map((draft) => {
               const before = savedByKey.get(draft.key)
               const status = !before ? 'ny' : same(draft, before) ? null : 'ändrad'
+              const renamed = before && before.tag !== draft.tag.trim() ? before.tag : null
               return (
                 <li key={draft.key}>
                   <button
@@ -372,6 +465,7 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
                     <span>
                       {draft.tag || '(ny tagg)'}
                       {hasExamples(draft) && <span className="tag-kind"> · exempel</span>}
+                      {renamed && <span className="tag-kind"> · hette {renamed}</span>}
                     </span>
                     {status ? <em>{status}</em> : <small>{count(savedCounts.get(draft.tag) ?? 0)}</small>}
                   </button>
@@ -384,19 +478,25 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           )}
         </aside>
 
-        {selected === UNTAGGED ? (
-          <Untagged
+        {selected === UNTAGGED || selected === ALL_IMAGES ? (
+          <ImagesView
             bank={bank}
+            onlyUntagged={selected === UNTAGGED}
             drafts={drafts}
             data={data}
             vectors={vectors.current}
-            onSelect={selectByName}
+            disabled={!!saving}
+            onSet={setImageTag}
+            onClear={clearImageTag}
           />
         ) : current ? (
           <TagDetail
             key={current.key}
             bank={bank}
             draft={current}
+            nameTaken={drafts.tags.some(
+              (draft) => draft.key !== current.key && draft.tag.trim().toLowerCase() === current.tag.trim().toLowerCase(),
+            )}
             savedName={savedByKey.get(current.key)?.tag ?? null}
             data={data}
             vectors={vectors.current}
@@ -430,6 +530,7 @@ function validate(drafts: Draft[]): string[] {
 interface Scored {
   image: ImageRecord
   score: number
+  override: Override
 }
 
 // Vektorn för en beskrivning. Räknas ut med textmodellen en kort stund efter
@@ -463,6 +564,8 @@ function usePromptVector(bank: FileSystemDirectoryHandle, prompt: string, vector
 interface DetailProps {
   bank: FileSystemDirectoryHandle
   draft: Draft
+  // Sant om en annan tagg redan har samma namn.
+  nameTaken: boolean
   // Taggens namn som det är sparat, eller null för en ny tagg.
   savedName: string | null
   data: Loaded
@@ -472,7 +575,7 @@ interface DetailProps {
   onRemove: () => void
 }
 
-function TagDetail({ bank, draft, savedName, data, vectors, disabled, onChange, onRemove }: DetailProps) {
+function TagDetail({ bank, draft, nameTaken, savedName, data, vectors, disabled, onChange, onRemove }: DetailProps) {
   const prompt = draft.prompt.trim()
   const examples = draft.examples ?? []
   const byExamples = examples.length > 0
@@ -490,31 +593,62 @@ function TagDetail({ bank, draft, savedName, data, vectors, disabled, onChange, 
     : promptVector && 'vector' in promptVector && promptVector.prompt === prompt
       ? promptVector.vector
       : null
+  const excludedKey = (draft.excluded ?? []).join()
+  const includedKey = (draft.included ?? []).join()
   const list = useMemo<Scored[]>(() => {
     if (!vector) return []
+    const fixes = {
+      excluded: vectorsOf(excludedKey ? excludedKey.split(',') : [], data.imageVectors),
+      included: vectorsOf(includedKey ? includedKey.split(',') : [], data.imageVectors),
+    }
     return data.images
-      .map((image) => ({ image, score: similarity(vector, data.imageVectors.get(image.id)!) }))
+      .map((image) => {
+        const imageVector = data.imageVectors.get(image.id)!
+        return { image, score: similarity(vector, imageVector), override: override(fixes, image.id, imageVector) }
+      })
       .sort((a, b) => b.score - a.score)
-  }, [vector, data])
+  }, [vector, excludedKey, includedKey, data])
 
-  const above = list.filter((item) => item.score >= draft.threshold)
-  const below = list.slice(above.length, above.length + SHOWN_BELOW)
+  const above = list.filter((item) => decide(item.override, item.score, draft.threshold))
+  // Bilder som är markerade som fel, och bilder över gränsen som liknar dem.
+  const wrong = list.filter(
+    (item) => item.override === 'excluded' || (item.override === 'like-excluded' && item.score >= draft.threshold),
+  )
+  const below = list.filter((item) => item.score < draft.threshold && !item.override).slice(0, SHOWN_BELOW)
   // Är det många bilder ovanför strecket visas de bästa och de närmast strecket.
   const top = above.length > SHOWN_ABOVE ? above.slice(0, 12) : above
   const nearLine = above.length > SHOWN_ABOVE ? above.slice(above.length - (SHOWN_ABOVE - 12)) : []
   const savedCount = savedName ? data.index.images.filter((image) => image.aiTags.includes(savedName)).length : 0
   const hasTag = (image: ImageRecord) => !!savedName && image.aiTags.includes(savedName)
 
-  function toggleExample(id: string) {
-    const next = examples.includes(id) ? examples.filter((example) => example !== id) : [...examples, id]
+  const excludedIds = draft.excluded ?? []
+
+  // En bild är antingen exempel, markerad som fel eller ingetdera.
+  function setRole(id: string, role: 'example' | 'wrong' | null) {
+    const nextExamples = role === 'example' ? [...examples.filter((e) => e !== id), id] : examples.filter((e) => e !== id)
+    const nextExcluded =
+      role === 'wrong' ? [...excludedIds.filter((e) => e !== id), id] : excludedIds.filter((e) => e !== id)
     // Bild mot bild ger mycket högre värden än bild mot text, så gränsen byter skala.
     let threshold = draft.threshold
-    if (next.length && !examples.length) threshold = EXAMPLE_RANGE.start
-    if (!next.length && examples.length) threshold = TEXT_RANGE.start
-    onChange({ examples: next.length ? next : undefined, threshold })
+    if (nextExamples.length && !examples.length) threshold = EXAMPLE_RANGE.start
+    if (!nextExamples.length && examples.length) threshold = TEXT_RANGE.start
+    onChange({
+      examples: nextExamples.length ? nextExamples : undefined,
+      excluded: nextExcluded.length ? nextExcluded : undefined,
+      included: without(draft.included, id),
+      threshold,
+    })
   }
+  const toggleExample = (id: string) => setRole(id, examples.includes(id) ? null : 'example')
 
-  const thumbProps = { thumbs: data.thumbs, examples, hasTag, disabled, onToggleExample: toggleExample }
+  const thumbProps = {
+    thumbs: data.thumbs,
+    examples,
+    hasTag,
+    disabled,
+    onToggleExample: toggleExample,
+    onWrong: (id: string) => setRole(id, 'wrong'),
+  }
 
   return (
     <div className="tag-detail">
@@ -528,7 +662,17 @@ function TagDetail({ bank, draft, savedName, data, vectors, disabled, onChange, 
             onChange={(event) => onChange({ tag: event.target.value })}
             autoFocus={!draft.tag}
           />
-          <small>Ordet som visas i bildbanken och går att söka på.</small>
+          {nameTaken ? (
+            <small className="error" role="alert">
+              Det finns redan en tagg som heter ”{draft.tag.trim()}”. Fältet byter namn på den här taggen. Leta efter
+              taggar i sökfältet till vänster.
+            </small>
+          ) : (
+            <small>
+              Ordet som visas i bildbanken och går att söka på. Ändrar du det här byter taggen namn.
+              {savedName && savedName !== draft.tag.trim() && ` Den hette ”${savedName}”.`}
+            </small>
+          )}
         </label>
         <label>
           Beskrivning för AI:n, på engelska
@@ -614,7 +758,8 @@ function TagDetail({ bank, draft, savedName, data, vectors, disabled, onChange, 
           <h4>Får taggen</h4>
           <p className="tag-explain">
             <span className="mark-new">ny</span> får taggen när du sparar. <span className="mark-lost">försvinner</span>{' '}
-            har taggen nu men tappar den när du sparar.
+            har taggen nu men tappar den när du sparar. Tryck <strong>Inte rätt</strong> under en bild som inte ska ha
+            taggen.
           </p>
           {above.length === 0 && <p className="tag-none">Ingen bild. Flytta reglaget åt vänster för fler bilder.</p>}
           <ImageRow items={top} {...thumbProps} />
@@ -633,6 +778,30 @@ function TagDetail({ bank, draft, savedName, data, vectors, disabled, onChange, 
           <ImageRow items={below} {...thumbProps} below />
         </div>
       )}
+
+      {wrong.length > 0 && (
+        <div className="tag-wrong">
+          <h4>Inte rätt ({count(wrong.length)})</h4>
+          <p className="tag-explain">
+            De här bilderna får aldrig taggen, och inte heller bilder som är nästan likadana, t.ex. andra bilder i samma
+            serie. Det gäller även bilder som importeras senare. Tryck <strong>Ångra</strong> om en bild ska kunna få
+            taggen igen.
+          </p>
+          <ul className="tag-thumbs">
+            {wrong.map((item) => (
+              <WrongThumb
+                key={item.image.id}
+                image={item.image}
+                similar={item.override === 'like-excluded'}
+                thumbs={data.thumbs}
+                hasTag={hasTag(item.image)}
+                disabled={disabled}
+                onUndo={() => setRole(item.image.id, null)}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
@@ -644,6 +813,7 @@ interface ThumbProps {
   hasTag: (image: ImageRecord) => boolean
   disabled: boolean
   onToggleExample: (id: string) => void
+  onWrong: (id: string) => void
 }
 
 function ImageRow({ items, below = false, ...props }: ThumbProps & { items: Scored[]; below?: boolean }) {
@@ -665,6 +835,7 @@ function TagThumb({
   hasTag,
   disabled,
   onToggleExample,
+  onWrong,
 }: ThumbProps & { image: ImageRecord; score: number | null; below?: boolean }) {
   const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
   const example = examples.includes(image.id)
@@ -687,33 +858,153 @@ function TagThumb({
         >
           {example ? '✓ Exempel' : 'Exempel'}
         </button>
+        {!below && !example && (
+          <button
+            type="button"
+            className="wrong"
+            title="Bilden ska inte ha taggen"
+            disabled={disabled}
+            onClick={() => onWrong(image.id)}
+          >
+            Inte rätt
+          </button>
+        )}
       </div>
     </li>
   )
 }
 
-interface UntaggedProps {
+// En bild som inte får taggen för att den, eller en nästan likadan bild, är markerad som fel.
+function WrongThumb({
+  image,
+  similar,
+  thumbs,
+  hasTag,
+  disabled,
+  onUndo,
+}: {
+  image: ImageRecord
+  similar: boolean
+  thumbs: FileSystemDirectoryHandle
+  hasTag: boolean
+  disabled: boolean
+  onUndo: () => void
+}) {
+  const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
+  return (
+    <li title={image.id} data-id={image.id}>
+      <div className="tag-thumb">
+        {thumb.status === 'ready' ? <img src={thumb.url} alt={image.description || image.id} loading="lazy" /> : <span />}
+        {hasTag && <span className="mark-lost">försvinner</span>}
+      </div>
+      <div className="tag-thumb-info">
+        {similar ? (
+          <small>Liknar en bild som inte är rätt</small>
+        ) : (
+          <button type="button" disabled={disabled} onClick={onUndo}>
+            Ångra
+          </button>
+        )}
+      </div>
+    </li>
+  )
+}
+
+interface ImagesProps {
   bank: FileSystemDirectoryHandle
+  // Bara bilder som inte når gränsen för någon tagg.
+  onlyUntagged: boolean
   drafts: Drafts
   data: Loaded
   vectors: PromptVectors
-  onSelect: (tag: string) => void
+  disabled: boolean
+  onSet: (id: string, tag: string, on: boolean) => void
+  onClear: (id: string, tag: string) => void
 }
 
-type Near = { tag: string; score: number; threshold: number }
+interface ImageTags {
+  image: ImageRecord
+  // Taggarna som bilden får när man sparar. fallback är taggen den får genom Minst en tagg per bild.
+  tags: { tag: string; fallback: boolean; manual: boolean }[]
+  // Taggar som är borttagna för hand från just den här bilden.
+  removed: string[]
+  // Taggarna som bilden ligger närmast men inte får.
+  near: string[]
+  // Sant om bilden inte når gränsen för någon tagg.
+  untagged: boolean
+}
 
-// Bilder som inte når gränsen för någon tagg, med de taggar de ligger närmast.
-function Untagged({ bank, drafts, data, vectors, onSelect }: UntaggedProps) {
+// Värdet för varje bild mot en taggvektor, i data.images ordning. Sparas per
+// laddning så att samma tagg bara räknas en gång.
+const scoreCache = new WeakMap<Loaded, Map<string, Float32Array>>()
+function scoresFor(data: Loaded, key: string, vector: Float32Array): Float32Array {
+  let cache = scoreCache.get(data)
+  if (!cache) scoreCache.set(data, (cache = new Map()))
+  let scores = cache.get(key)
+  if (!scores) {
+    scores = new Float32Array(data.images.length)
+    data.images.forEach((image, n) => (scores![n] = similarity(vector, data.imageVectors.get(image.id)!)))
+    if (cache.size > 1000) cache.clear()
+    cache.set(key, scores)
+  }
+  return scores
+}
+
+// Taggarna som varje bild får med utkastet, på samma sätt som när man sparar.
+function imageTags(config: BankConfig, data: Loaded, vectors: PromptVectors): ImageTags[] {
+  const tags = config.aiTags.flatMap((aiTag) => {
+    const vector = tagVector(aiTag, data.imageVectors, vectors)
+    if (!vector) return []
+    const key = vector.examples ? `e:${aiTag.examples!.join()}` : `p:${aiTag.prompt}`
+    const range = vector.examples ? EXAMPLE_RANGE : TEXT_RANGE
+    return [{ aiTag, vector, range: range.max - range.min, scores: scoresFor(data, key, vector.vector) }]
+  })
+  return data.images.map((image, n) => {
+    const imageVector = data.imageVectors.get(image.id)!
+    const result: ImageTags = { image, tags: [], removed: [], near: [], untagged: true }
+    const candidates: { tag: string; margin: number }[] = []
+    for (const { aiTag, vector, range, scores } of tags) {
+      const value = override(vector, image.id, imageVector)
+      if (value === 'excluded') result.removed.push(aiTag.tag)
+      if (decide(value, scores[n], vector.threshold)) {
+        result.tags.push({ tag: aiTag.tag, fallback: false, manual: value === 'included' })
+      } else if (!isBlocked(value)) {
+        candidates.push({ tag: aiTag.tag, margin: (scores[n] - vector.threshold) / range })
+      }
+    }
+    result.untagged = !result.tags.length
+    candidates.sort((a, b) => b.margin - a.margin)
+    if (result.untagged && config.atLeastOneTag && candidates.length) {
+      result.tags.push({ tag: candidates.shift()!.tag, fallback: true, manual: false })
+    }
+    result.near = candidates.slice(0, 3).map((candidate) => candidate.tag)
+    return result
+  })
+}
+
+// Bilderna med taggarna de får. Ett klick på en tagg markerar den, ett klick
+// till tar bort den från bilden. Nya taggar skrivs in under bilden.
+function ImagesView({ bank, onlyUntagged, drafts, data, vectors, disabled, onSet, onClear }: ImagesProps) {
   const [ready, setReady] = useState<{ config: BankConfig } | { error: string } | null>(null)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const [shown, setShown] = useState(PAGE)
   const config = useMemo(() => toConfig(drafts), [drafts])
 
-  // Beskrivningar som inte har räknats ut än behövs för att veta vilka bilder som blir utan.
+  // Beskrivningar som inte har räknats ut än behövs för att veta vilka taggar bilderna får.
   useEffect(() => {
     let cancelled = false
-    promptVectors(bank, promptsOf(config), vectors, (done, total) => {
-      if (!cancelled && total) setProgress({ done, total })
-    }).then(
+    promptVectors(
+      bank,
+      promptsOf(config),
+      vectors,
+      async (done, total) => {
+        // Ändras utkastet under tiden avbryts det. Det som hann räknas ut finns kvar i vectors.
+        if (cancelled) throw new Error('avbruten')
+        if (total) setProgress({ done, total })
+        await breathe()
+      },
+      UI_CHUNK,
+    ).then(
       (computed) => {
         for (const [prompt, vector] of computed) vectors.set(prompt, vector)
         if (!cancelled) setReady({ config })
@@ -725,22 +1016,13 @@ function Untagged({ bank, drafts, data, vectors, onSelect }: UntaggedProps) {
     }
   }, [bank, config, vectors])
 
-  const untagged = useMemo(() => {
-    if (!ready || !('config' in ready)) return []
-    const tags = tagVectors(ready.config, data.imageVectors, vectors)
-    const result: { image: ImageRecord; near: Near[] }[] = []
-    for (const image of data.images) {
-      const imageVector = data.imageVectors.get(image.id)!
-      if (tags.some((tag) => similarity(tag.vector, imageVector) >= tag.threshold)) continue
-      const near = tags
-        .map((tag) => ({ tag, margin: margin(tag, imageVector) }))
-        .sort((a, b) => b.margin - a.margin)
-        .slice(0, 3)
-        .map(({ tag }) => ({ tag: tag.tag, score: similarity(tag.vector, imageVector), threshold: tag.threshold }))
-      result.push({ image, near })
-    }
-    return result
-  }, [ready, data, vectors])
+  const all = useMemo(
+    () => (ready && 'config' in ready ? imageTags(ready.config, data, vectors) : []),
+    [ready, data, vectors],
+  )
+  const untagged = all.filter((item) => item.untagged)
+  const list = onlyUntagged ? untagged : all
+  const names = useMemo(() => drafts.tags.map((draft) => draft.tag.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b, 'sv')), [drafts])
 
   if (ready && 'error' in ready) {
     return (
@@ -752,58 +1034,159 @@ function Untagged({ bank, drafts, data, vectors, onSelect }: UntaggedProps) {
   if (!ready) {
     return (
       <p className="status">
-        Räknar ut vilka bilder som inte når någon tagg
+        Räknar ut vilka taggar bilderna får
         {progress && progress.total > 0 && ` – ${count(progress.done)} av ${count(progress.total)} beskrivningar`}…
       </p>
     )
   }
   return (
-    <div className="tag-detail tag-untagged">
-      <h4>Bilder utan AI-taggar</h4>
+    <div className={onlyUntagged ? 'tag-detail tag-images-view tag-untagged' : 'tag-detail tag-images-view'}>
+      <h4>{onlyUntagged ? 'Bilder utan AI-taggar' : 'Alla bilder och deras taggar'}</h4>
       <p className="tag-hits" role="status">
-        {count(untagged.length)} av {count(data.images.length)} bilder når inte gränsen för någon tagg.
+        {onlyUntagged
+          ? `${count(untagged.length)} av ${count(data.images.length)} bilder når inte gränsen för någon tagg.`
+          : `${count(all.length)} bilder.`}
       </p>
       <p className="tag-explain">
-        {drafts.atLeastOneTag
-          ? 'Med Minst en tagg per bild får de ändå den tagg de ligger närmast, den första under varje bild.'
-          : 'De får inga AI-taggar. Slå på Minst en tagg per bild om alla bilder ska få minst en.'}{' '}
-        Klicka på en tagg under en bild för att sänka dess gräns, eller lägg till en ny tagg som passar.
+        Under varje bild står taggarna den får. Klicka på en tagg som är fel: den blir röd med ett kryss. Klicka igen
+        för att ta bort den från bilden. Skriv i fältet under bilden för att lägga till en tagg. Nästan likadana
+        bilder, t.ex. andra bilder i samma serie, följer med. Inget ändras förrän du trycker Spara ändringar.
+        {onlyUntagged &&
+          (drafts.atLeastOneTag
+            ? ' Taggen märkt ”närmast” får bilden genom Minst en tagg per bild.'
+            : ' Slå på Minst en tagg per bild om alla bilder ska få minst en tagg.')}
       </p>
-      <ul className="tag-thumbs untagged">
-        {untagged.map(({ image, near }) => (
-          <UntaggedThumb key={image.id} image={image} near={near} thumbs={data.thumbs} onSelect={onSelect} />
+      <datalist id="tag-name-list">
+        {names.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+      <ul className="tag-thumbs image-tags">
+        {list.slice(0, shown).map((item) => (
+          <ImageTagsThumb
+            key={item.image.id}
+            item={item}
+            thumbs={data.thumbs}
+            disabled={disabled}
+            showNear={onlyUntagged}
+            onSet={(tag, on) => onSet(item.image.id, tag, on)}
+            onClear={(tag) => onClear(item.image.id, tag)}
+          />
         ))}
       </ul>
+      {list.length > shown && (
+        <button type="button" onClick={() => setShown((value) => value + PAGE)}>
+          Visa fler bilder ({count(list.length - shown)} kvar)
+        </button>
+      )}
     </div>
   )
 }
 
-function UntaggedThumb({
-  image,
-  near,
+function ImageTagsThumb({
+  item,
   thumbs,
-  onSelect,
+  disabled,
+  showNear,
+  onSet,
+  onClear,
 }: {
-  image: ImageRecord
-  near: Near[]
+  item: ImageTags
   thumbs: FileSystemDirectoryHandle
-  onSelect: (tag: string) => void
+  disabled: boolean
+  showNear: boolean
+  onSet: (tag: string, on: boolean) => void
+  onClear: (tag: string) => void
 }) {
-  const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
+  const thumb = useObjectUrl(thumbs, `${item.image.id}.webp`)
+  // Taggen som är markerad för borttagning. Nästa klick tar bort den.
+  const [armed, setArmed] = useState<string | null>(null)
+  const [text, setText] = useState('')
+
+  function add() {
+    if (!text.trim()) return
+    onSet(text, true)
+    setText('')
+  }
+
   return (
-    <li title={image.id} data-id={image.id}>
+    <li title={item.image.id} data-id={item.image.id}>
       <div className="tag-thumb">
-        {thumb.status === 'ready' ? <img src={thumb.url} alt={image.description || image.id} loading="lazy" /> : <span />}
+        {thumb.status === 'ready' ? (
+          <img src={thumb.url} alt={item.image.description || item.image.id} loading="lazy" />
+        ) : (
+          <span />
+        )}
       </div>
-      <ul className="near-tags">
-        {near.map((item) => (
-          <li key={item.tag}>
-            <button type="button" onClick={() => onSelect(item.tag)} title={`Gräns ${format(item.threshold)}`}>
-              {item.tag} <small>{format(item.score)}</small>
+      <ul className="image-tag-chips">
+        {item.tags.map(({ tag, fallback, manual }) => (
+          <li key={tag}>
+            <button
+              type="button"
+              className={armed === tag ? 'chip armed' : 'chip'}
+              data-tag={tag}
+              disabled={disabled}
+              title={armed === tag ? 'Klicka igen för att ta bort taggen från bilden' : 'Klicka om taggen är fel'}
+              onClick={() => {
+                if (armed === tag) {
+                  setArmed(null)
+                  onSet(tag, false)
+                } else setArmed(tag)
+              }}
+              onBlur={() => setArmed((value) => (value === tag ? null : value))}
+            >
+              {armed === tag && <span aria-hidden="true">✕ </span>}
+              {tag}
+              {fallback && <small> närmast</small>}
+              {manual && <small> för hand</small>}
+            </button>
+          </li>
+        ))}
+        {item.removed.map((tag) => (
+          <li key={`removed-${tag}`}>
+            <button
+              type="button"
+              className="chip removed"
+              data-tag={tag}
+              disabled={disabled}
+              title="Borttagen från bilden. Klicka för att ångra."
+              onClick={() => onClear(tag)}
+            >
+              <s>{tag}</s> ↶
             </button>
           </li>
         ))}
       </ul>
+      {showNear && item.near.length > 0 && (
+        <p className="near-tags">
+          Förslag:{' '}
+          {item.near.map((tag) => (
+            <button key={tag} type="button" className="chip suggestion" disabled={disabled} onClick={() => onSet(tag, true)}>
+              + {tag}
+            </button>
+          ))}
+        </p>
+      )}
+      <form
+        className="add-tag"
+        onSubmit={(event) => {
+          event.preventDefault()
+          add()
+        }}
+      >
+        <input
+          type="text"
+          list="tag-name-list"
+          placeholder="Lägg till tagg"
+          aria-label={`Lägg till tagg på ${item.image.id}`}
+          value={text}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button type="submit" disabled={disabled || !text.trim()} aria-label="Lägg till">
+          +
+        </button>
+      </form>
     </li>
   )
 }

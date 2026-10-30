@@ -40,12 +40,14 @@ export async function storedPromptVectors(
 }
 
 // Textvektorer för alla prompter. De som inte redan finns räknas ut med
-// textmodellen, några åt gången. onProgress kan kasta för att avbryta.
+// textmodellen, chunk åt gången. onProgress kan kasta för att avbryta. I
+// adminvyn körs modellen i sidan, och då håller små chunk sidan svarande.
 export async function promptVectors(
   bank: FileSystemDirectoryHandle,
   prompts: string[],
   known: PromptVectors,
   onProgress: (done: number, total: number) => Promise<void> | void = () => {},
+  chunk = 16,
 ): Promise<PromptVectors> {
   const result: PromptVectors = new Map()
   const missing: string[] = []
@@ -54,11 +56,15 @@ export async function promptVectors(
     if (vector) result.set(prompt, vector)
     else missing.push(prompt)
   }
-  for (let start = 0; start < missing.length; start += 16) {
+  for (let start = 0; start < missing.length; start += chunk) {
     await onProgress(start, missing.length)
-    const chunk = missing.slice(start, start + 16)
-    const vectors = await textEmbeddings(bank, chunk)
-    chunk.forEach((prompt, n) => result.set(prompt, vectors[n]))
+    const part = missing.slice(start, start + chunk)
+    const vectors = await textEmbeddings(bank, part)
+    // Även i known, så att det som hann räknas ut finns kvar om det avbryts.
+    part.forEach((prompt, n) => {
+      result.set(prompt, vectors[n])
+      known.set(prompt, vectors[n])
+    })
   }
   await onProgress(missing.length, missing.length)
   return result
@@ -89,7 +95,24 @@ export function tagVector(tag: AiTag, imageVectors: Vectors, vectors: PromptVect
   // En tagg vars exempelbilder alla har försvunnit använder prompten, med ett
   // tröskelvärde som passar text.
   const threshold = examples || !hasExamples(tag) ? tag.threshold : TEXT_RANGE.start
-  return { tag: tag.tag, threshold, vector, examples: !!examples }
+  return {
+    tag: tag.tag,
+    threshold,
+    vector,
+    examples: !!examples,
+    excluded: vectorsOf(tag.excluded, imageVectors),
+    included: vectorsOf(tag.included, imageVectors),
+  }
+}
+
+// Vektorerna för bilderna, efter id. Bilder utan vektor hoppas över.
+export function vectorsOf(ids: string[] | undefined, imageVectors: Vectors): Map<string, Float32Array> {
+  const result = new Map<string, Float32Array>()
+  for (const id of ids ?? []) {
+    const image = imageVectors.get(id)
+    if (image) result.set(id, image)
+  }
+  return result
 }
 
 export function tagVectors(config: BankConfig, imageVectors: Vectors, vectors: PromptVectors): TagVector[] {
@@ -101,7 +124,7 @@ export function applyTags(images: ImageRecord[], imageVectors: Vectors, config: 
   const tags = tagVectors(config, imageVectors, vectors)
   for (const image of images) {
     const vector = imageVectors.get(image.id)
-    image.aiTags = vector && !image.previewProblem ? tagsFor(vector, tags, config.atLeastOneTag) : []
+    image.aiTags = vector && !image.previewProblem ? tagsFor(image.id, vector, tags, config.atLeastOneTag) : []
   }
 }
 

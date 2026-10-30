@@ -634,6 +634,7 @@ button.primary {
 .tag-thumb-info {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 0.25rem;
 }
@@ -643,9 +644,20 @@ button.primary {
   font-size: 0.75rem;
 }
 
-.tag-thumbs button.example {
+.tag-thumb-info button {
   padding: 0.1rem 0.4rem;
   font-size: 0.75rem;
+}
+
+.tag-thumbs button.wrong:hover:not(:disabled) {
+  border-color: var(--blocked);
+  color: var(--blocked);
+}
+
+.tag-wrong {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
 
 .tag-thumbs button.example.selected {
@@ -695,22 +707,68 @@ button.primary {
   font-size: 0.9rem;
 }
 
+.tag-thumbs.image-tags {
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+}
+
+.image-tag-chips,
 .near-tags {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.25rem;
-  margin: 0.25rem 0 0;
+  margin: 0.35rem 0 0;
   padding: 0;
   list-style: none;
-}
-
-.near-tags button {
-  padding: 0.1rem 0.4rem;
+  color: var(--muted);
   font-size: 0.75rem;
 }
 
-.tag-thumbs.untagged {
-  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+.chip {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.chip small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.chip.armed {
+  border-color: var(--blocked);
+  background: var(--blocked);
+  color: #fff;
+}
+
+.chip.armed small {
+  color: #fff;
+}
+
+.chip.removed {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.chip.suggestion {
+  border-style: dashed;
+}
+
+.add-tag {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+.add-tag input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.8rem;
+}
+
+.add-tag button {
+  padding: 0.1rem 0.5rem;
 }
 
 .tag-line {

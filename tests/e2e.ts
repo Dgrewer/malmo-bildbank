@@ -73,7 +73,9 @@ async function test(name: string, run: () => Promise<void>) {
     console.log(`  ✓ ${name}`)
   } catch (error) {
     failed++
-    console.log(`  ✗ ${name}\n      ${error instanceof Error ? error.message : error}`)
+    // Raden i testet där felet uppstod, om den finns i stacken.
+    const where = error instanceof Error ? error.stack?.match(/e2e\.ts:\d+/)?.[0] : undefined
+    console.log(`  ✗ ${name}\n      ${error instanceof Error ? error.message : error}${where ? ` (${where})` : ''}`)
   }
 }
 
@@ -139,8 +141,17 @@ async function screenshot(page: Page, name: string) {
   await page.screenshot({ path: path.join(process.env.SCREENSHOTS, `${name}.png`) })
 }
 
+// Lägger till vilket steg som misslyckades i felet.
+async function step<T>(label: string, promise: Promise<T>): Promise<T> {
+  try {
+    return await promise
+  } catch (error) {
+    throw new Error(`${label}: ${error instanceof Error ? error.message : error}`)
+  }
+}
+
 async function clickButton(page: Page, text: string) {
-  await page.locator(`button::-p-text(${text})`).click()
+  await step(`Knappen "${text}"`, page.locator(`button::-p-text(${text})`).click())
 }
 
 // Körs i sidan före appen: räknar object-URL:er som skapas och frigörs.
@@ -1237,7 +1248,7 @@ try {
       return Number(text.match(/^([\d\s ]+) av/)![1].replace(/\D/g, ''))
     }
     const selectTag = async (name: string) => {
-      await page.locator(`.tag-names button::-p-text(${name})`).click()
+      await step(`Taggen ${name} i listan`, page.locator(`.tag-names button::-p-text(${name})`).click())
       await page.waitForSelector(`.tag-fields input[value="${name}"]`, { timeout: 5_000 })
     }
 
@@ -1274,7 +1285,7 @@ try {
       .match(/[\d\s ]+(?= av)|(?<=av )[\d\s ]+/g)!
       .map((value) => Number(value.replace(/\D/g, '')))
     assert(untagged === total - red, `${untagged} bilder utan taggar, väntade ${total - red}`)
-    assert((await page.$$('.tag-untagged .tag-thumbs > li')).length === untagged, 'Fel antal bilder i listan')
+    assert((await page.$$('.tag-untagged .tag-thumbs > li')).length === Math.min(untagged, 60), 'Fel antal bilder i listan')
 
     // Utan Minst en tagg per bild får de bilderna inga AI-taggar.
     await page.click('.tag-option input')
@@ -1325,13 +1336,84 @@ try {
     const withoutTags = exampleIndex.images.filter((image) => !image.previewProblem && !image.aiTags.length)
     assert(!withoutTags.length, `${withoutTags.length} bilder saknar AI-taggar fast Minst en tagg per bild är på`)
 
-    // De förvalda taggarna läggs till, och de egna taggarna röd och alla finns kvar.
-    const defaultCount = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8')).aiTags.length as number
-    await clickButton(page, 'Använd förvalda taggar och gränser')
-    await waitForText(page, `${(defaultCount + 2).toLocaleString('sv-SE')} taggar`)
+    // Inte rätt: bilden, och bilder som är nästan likadana, får inte taggen.
+    await selectTag('röd')
+    await page.focus('.tag-threshold input[type="range"]')
+    await page.keyboard.press('Home')
+    await waitForText(page, 'Gräns: 0,500')
+    const before = await hits()
+    await page.waitForSelector('.tag-images button.wrong', { timeout: 30_000 })
+    const wrong = await page.$eval('.tag-images button.wrong', (element) => element.closest('li')!.getAttribute('data-id')!)
+    await page.click(`.tag-images .tag-thumbs > li[data-id="${wrong}"] button.wrong`)
+    await page.waitForSelector(`.tag-wrong li[data-id="${wrong}"]`, { timeout: 5_000 })
+    const wrongCount = (await page.$$('.tag-wrong .tag-thumbs > li')).length
+    assert((await hits()) === before - wrongCount, `${await hits()} bilder får taggen, väntade ${before - wrongCount}`)
+    assert(!(await page.$(`.tag-images li[data-id="${wrong}"]`)), 'Bilden som inte är rätt visas fortfarande under Får taggen')
+    await clickButton(page, 'Spara ändringar')
+    await waitForText(page, 'Sparat.', 120_000)
+    const withWrong = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    assert(
+      JSON.stringify(withWrong.aiTags.find((tag: { tag: string }) => tag.tag === 'röd').excluded) === JSON.stringify([wrong]),
+      `config.json: ${JSON.stringify(withWrong)}`,
+    )
+    const wrongIndex = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const wrongImage = wrongIndex.images.find((image) => image.id === wrong)!
+    assert(!wrongImage.aiTags.includes('röd') && wrongImage.aiTags.length > 0, `${wrong} har AI-taggarna ${wrongImage.aiTags}`)
+    assert(
+      wrongIndex.images.filter((image) => image.aiTags.includes('röd')).length === before - wrongCount,
+      'Index och adminvy är oense om antalet bilder med röd',
+    )
+    // Ångra gör att bilden kan få taggen igen.
+    await page.click(`.tag-wrong li[data-id="${wrong}"] button`)
+    await page.waitForSelector(`.tag-images li[data-id="${wrong}"]`, { timeout: 5_000 })
     await waitForText(page, 'Du har ändringar som inte är sparade')
     await clickButton(page, 'Ångra ändringar')
-    await page.waitForFunction(() => document.querySelector('.tag-count')?.textContent === '2 taggar', { timeout: 5_000 })
+
+    // Under en bild: ett klick på en tagg markerar den, ett klick till tar bort
+    // den. En ny tagg som skrivs in får bilden som exempel.
+    await step('Alla bilder', clickButton(page, 'Alla bilder och deras taggar'))
+    await page.waitForSelector('.image-tags > li .chip', { timeout: 60_000 })
+    const [first, firstTag] = await page.$eval('.image-tags > li', (element) => [
+      element.getAttribute('data-id')!,
+      element.querySelector('.chip')!.getAttribute('data-tag')!,
+    ])
+    const chip = `.image-tags > li[data-id="${first}"] .chip[data-tag="${firstTag}"]`
+    await page.click(chip)
+    await page.waitForSelector(`${chip}.armed`, { timeout: 5_000 })
+    await page.click(chip)
+    await step('överstruken tagg', page.waitForSelector(`${chip}.removed`, { timeout: 30_000 }))
+    await page.type(`.image-tags > li[data-id="${first}"] .add-tag input`, 'nyplats')
+    await page.keyboard.press('Enter')
+    await step('ny tagg under bilden', page.waitForSelector(`.image-tags > li[data-id="${first}"] .chip[data-tag="nyplats"]:not(.removed)`, { timeout: 30_000 }))
+    await waitForText(page, '3 taggar')
+    await clickButton(page, 'Spara ändringar')
+    await waitForText(page, 'Sparat.', 120_000)
+    const byHand = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    const tagNamed = (name: string) => byHand.aiTags.find((tag: { tag: string }) => tag.tag === name)
+    assert(
+      tagNamed(firstTag).excluded?.includes(first) && JSON.stringify(tagNamed('nyplats').examples) === JSON.stringify([first]),
+      `config.json: ${JSON.stringify(byHand)}`,
+    )
+    const firstImage = (JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile).images.find(
+      (image) => image.id === first,
+    )!
+    assert(
+      firstImage.aiTags.includes('nyplats') && !firstImage.aiTags.includes(firstTag),
+      `${first} har AI-taggarna ${firstImage.aiTags}`,
+    )
+    // Ångra borttagningen, och ta bort den nya taggen igen, utan att spara.
+    await page.click(`${chip}.removed`)
+    await step('ångrad tagg', page.waitForFunction((selector) => !document.querySelector(selector), { timeout: 30_000 }, `${chip}.removed`))
+    await clickButton(page, 'Ångra ändringar')
+
+    // De förvalda taggarna läggs till, och de egna taggarna röd, alla och nyplats finns kvar.
+    const defaultCount = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8')).aiTags.length as number
+    await clickButton(page, 'Återställ förvalda taggar')
+    await waitForText(page, `0 taggar fick förvalda värden och ${defaultCount.toLocaleString('sv-SE')} lades till`)
+    await waitForText(page, `${(defaultCount + 3).toLocaleString('sv-SE')} taggar`)
+    await waitForText(page, 'Du har ändringar som inte är sparade')
+    await clickButton(page, 'Ångra ändringar')
+    await page.waitForFunction(() => document.querySelector('.tag-count')?.textContent === '3 taggar', { timeout: 5_000 })
 
     // Importen ser att taggarna redan är satta.
     await clickButton(page, 'Importera bilder')

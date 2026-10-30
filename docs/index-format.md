@@ -129,7 +129,11 @@ Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ä
 - Allt är en förhandsvisning tills man trycker Spara ändringar. Då skrivs `config.json` och alla bilder får nya AI-taggar direkt, utan import.
 - Man kan lägga till och ta bort taggar och ändra namn och beskrivning.
 - Exempelbilder: man klickar på Exempel under bilder som visar motivet. Taggen hittar då bilder som liknar dem, i stället för att läsa beskrivningen. Det passar för byggnader och platser som modellen inte känner igen med namn, t.ex. Malmöhus eller Triangeln. Nya bilder som importeras får taggen automatiskt.
-- Bilder utan AI-taggar: visar bilderna som inte når gränsen för någon tagg, med de tre taggar de ligger närmast. Ett klick på en tagg öppnar den.
+- Inte rätt: man klickar på Inte rätt under en bild som har fått taggen fel, t.ex. en bild under "bro" utan bro. Bilden får aldrig taggen, och inte heller bilder som är nästan likadana (bild mot bild minst 0,95, t.ex. andra bilder i samma serie), även om de importeras senare. Bilderna visas under rubriken Inte rätt med en Ångra-knapp.
+- Återställ förvalda taggar: förvalda taggar får tillbaka sina förvalda beskrivningar och gränser, och förvalda taggar som har tagits bort läggs tillbaka. Egna taggar, taggar med exempelbilder och listorna Inte rätt ändras inte. Inget sparas förrän man trycker Spara ändringar.
+- `config.json` ligger i den delade mappen, så alla användare har samma taggar. Exempelbilder och Inte rätt som någon lägger till förbättrar taggningen för alla.
+- Alla bilder och deras taggar, och Bilder utan AI-taggar: under varje bild står taggarna den får när man sparar. Ett klick på en tagg gör den röd med ett kryss, ett klick till tar bort den från bilden (`excluded`). Borttagna taggar står kvar överstrukna och går att ångra. I fältet under bilden skriver man in en tagg att lägga till: på en tagg med prompt hamnar bilden i `included`, på en tagg med exempelbilder blir bilden ett exempel, och finns ingen tagg med namnet skapas en med bilden som exempel. Bilder utan AI-taggar visar också de tre taggar bilden ligger närmast, som förslag.
+- Byter man namn på en tagg till ett namn som redan finns varnar fältet, och taggen visas med "hette …" i listan.
 - Minst en tagg per bild: en bild som inte når någon gräns får ändå den tagg den ligger närmast.
 
 ```json
@@ -137,7 +141,7 @@ Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ä
   "version": 1,
   "atLeastOneTag": true,
   "aiTags": [
-    { "tag": "cykel", "prompt": "a photo of a bicycle", "threshold": 0.045 },
+    { "tag": "cykel", "prompt": "a photo of a bicycle", "threshold": 0.045, "excluded": ["MB-000040"] },
     { "tag": "Malmöhus", "prompt": "", "threshold": 0.8, "examples": ["MB-000012", "MB-000085"] }
   ]
 }
@@ -151,13 +155,15 @@ Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ä
 | `prompt` | Det textmodellen jämför bilden med, på engelska, eftersom modellen förstår engelska bäst. Får vara tom om taggen har exempelbilder. |
 | `threshold` | Lägsta likhet för att bilden ska få taggen (skalärprodukt mellan normaliserade vektorer). Mot en prompt ligger likheten normalt mellan −0,1 och 0,15, och reglaget går från 0 till 0,15. Mot exempelbilder ligger den mellan 0,5 och 1, och reglaget går från 0,5 till 1. Högre värde ger färre men säkrare taggar. |
 | `examples` | Valfri. Id för bilder som visar motivet. Bilderna jämförs då med medelvärdet av exempelbildernas AI-vektorer i stället för med prompten. Har alla exempelbilder tagits bort används prompten med gränsen 0,05. |
+| `excluded` | Valfri. Id för bilder som inte ska ha taggen. De och bilder vars AI-vektor har minst likheten 0,95 med någon av dem får inte taggen, inte heller med `atLeastOneTag`. En bild står inte i både `examples` och `excluded`. |
+| `included` | Valfri. Id för bilder som har fått taggen för hand. De och bilder som är nästan likadana (minst 0,95) får taggen oavsett värde. `excluded` går före `included` för samma bild, och en rättning av bilden själv går före en rättning av en liknande bild. |
 
-- En bild får alla taggar vars likhet är minst `threshold`. Bilder utan AI-vektor får inga AI-taggar.
+- En bild får alla taggar vars likhet är minst `threshold`, utom taggar där den är utesluten genom `excluded`. Bilder utan AI-vektor får inga AI-taggar.
 - Taggar som saknar något fält, eller som redan finns tidigare i listan, används inte. Importen säger hur många det var.
 - Taggarnas textvektorer sparas i `ai-taggar-<fingeravtryck>.bin`, en rad per prompt i samma ordning som `aiTagging.prompts` i indexet. Nya bilder taggas då utan att textmodellen körs, och bara nya eller ändrade prompter behöver räknas ut. Filen byter namn när taggarna ändras, och gamla filer tas bort när det nya indexet är sparat.
 - Har `config.json` ändrats för hand sätts AI-taggarna om för alla bilder vid nästa import. Förhandsvisningen säger det. Bildernas AI-vektorer räknas inte om.
 - Två taggar med samma prompt och tröskelvärde hamnar alltid på samma bilder. Så är solnedgång och soluppgång gjorda, eftersom modellen inte kan se skillnad på dem och man ska hitta alla bilderna oavsett vilket ord man söker på.
-- Förvalda tröskelvärden: taggens medianvärde över testbilderna plus 0,03, men minst 0,04. Allmänna taggar som "himmel" och "hamn" får då en högre gräns, eftersom de annars hamnar på många bilder. Testbilderna får i snitt 6 taggar. Gränsen för "flygbild" stämmer med drönarbilderna (filnamn DJI_) i testdata. Gränserna kan behöva justeras för den riktiga bildbanken, under Admin, AI-taggar.
+- Förvalda tröskelvärden: taggens medianvärde över testbilderna plus 0,03, men minst 0,04. Allmänna taggar som "himmel" och "hamn" får då en högre gräns, eftersom de annars hamnar på många bilder. Testbilderna får i snitt 6 taggar. "flygbild" och "drönarbild" har samma prompt och gränsen 0,03, vald mot drönarbilderna (filnamn DJI_) i testdata: 33 av 45 hittas och 4 andra bilder får taggen. Bilder tagna snett från låg höjd känns sämre igen. Med fem exempelbilder i stället hittades 41 av 45, med 6 fel. Gränserna kan behöva justeras för den riktiga bildbanken, under Admin, AI-taggar.
 - De förvalda taggarna beskriver motiv, platser, byggnader (även kyrka, moské och synagoga), personer (kvinna, man, barn, ungdomar, äldre, rullstol), aktiviteter (även demonstration), årstider och bildtyper. Det finns inga taggar för etnicitet eller hälsa.
 
 ## Import
