@@ -61,7 +61,7 @@ export function Library({ root, onChangeFolder }: Props) {
         </span>
         {!admin && (
           <button type="button" onClick={() => setAdmin(true)}>
-            Importera
+            Admin
           </button>
         )}
         <button type="button" disabled={admin} onClick={onChangeFolder}>

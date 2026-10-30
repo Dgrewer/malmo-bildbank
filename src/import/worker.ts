@@ -7,14 +7,14 @@
 //   abort   avbryter efter den fil som håller på. Det som är klart sparas.
 
 import { decodeVectors, encodeVectors, type Vectors } from '../ai/embeddings.ts'
-import { hasModel, imageEmbedding, textEmbeddings, visionDevice, type Device } from '../ai/model.ts'
+import { hasModel, imageEmbedding, visionDevice, type Device } from '../ai/model.ts'
 import { MODEL } from '../ai/modelInfo.ts'
-import { configKey, DEFAULT_CONFIG, parseConfig, readConfig, tagsFor, type TagVector } from '../ai/tagConfig.ts'
+import { configKey, DEFAULT_CONFIG, parseConfig, readConfig } from '../ai/tagConfig.ts'
+import { applyTags, promptVectors, removeOldTagVectors, saveTagVectors, storedPromptVectors } from '../ai/tagging.ts'
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
 import {
-  formatId,
   idNumber,
   INDEX_VERSION,
   type ImageRecord,
@@ -409,8 +409,6 @@ async function computeVectors(current: Session, images: ImageRecord[]) {
   return result
 }
 
-const TAG_VECTORS = 'ai-taggar.bin'
-
 // Har taggarna i config.json ändrats sedan AI-taggarna sattes? En trasig
 // config.json räknas som ändrad, så att importen visar vad som är fel.
 async function tagsOutdated(bank: FileSystemDirectoryHandle, tagging: IndexAiTagging | undefined): Promise<boolean> {
@@ -439,34 +437,22 @@ async function setAiTags(current: Session, appData: FileSystemDirectoryHandle, i
   try {
     const { config, skipped, created } = await readConfig(current.bank, appData)
     Object.assign(result, { tags: config.aiTags.length, skipped, created })
-    const key = await configKey(config)
-    const same = current.tagging?.model === MODEL.name && current.tagging.config === key
-    if (!computed && same) return result
-    // Taggarnas textvektorer sparas i ai-taggar.bin, rad n för tagg n. Har
-    // taggarna inte ändrats behöver textmodellen inte köras.
-    const file = same ? await readFile(appData, TAG_VECTORS) : null
-    const stored = file && decodeVectors(await file.arrayBuffer(), MODEL.dimensions)
-    let vectors = stored?.size === config.aiTags.length ? config.aiTags.map((_, n) => stored.get(formatId(n + 1))) : []
-    if (!vectors.every(Boolean) || !vectors.length) {
-      // Textmodellen tar några taggar åt gången, så att importen går att avbryta.
-      vectors = []
-      for (let start = 0; start < config.aiTags.length; start += 16) {
+    const same = current.tagging?.model === MODEL.name && current.tagging.config === (await configKey(config))
+    if (!computed && same && current.tagging?.file) return result
+    // Bara prompter som är nya sedan förra gången behöver textmodellen.
+    // Den tar några åt gången, så att importen går att avbryta.
+    const vectors = await promptVectors(
+      current.bank,
+      config.aiTags.map((tag) => tag.prompt),
+      await storedPromptVectors(appData, current.tagging),
+      async (done, total) => {
         await breathe()
-        progress('tags', start, config.aiTags.length)
-        const chunk = config.aiTags.slice(start, start + 16)
-        vectors.push(...(await textEmbeddings(current.bank, chunk.map((tag) => tag.prompt))))
-      }
-      progress('tags', config.aiTags.length, config.aiTags.length)
-      const rows: Vectors = new Map(vectors.map((vector, n) => [formatId(n + 1), vector!]))
-      await writeFile(appData, TAG_VECTORS, new Blob([encodeVectors(rows, MODEL.dimensions)]))
-    }
-    const tags: TagVector[] = config.aiTags.map((tag, n) => ({ tag: tag.tag, threshold: tag.threshold, vector: vectors[n]! }))
-    for (const image of images) {
-      const vector = current.vectors.get(image.id)
-      image.aiTags = vector && !image.previewProblem ? tagsFor(vector, tags) : []
-    }
+        progress('tags', done, total)
+      },
+    )
+    applyTags(images, current.vectors, config, vectors)
     result.retagged = true
-    result.tagging = { model: MODEL.name, config: key }
+    result.tagging = await saveTagVectors(appData, config, vectors)
   } catch (error) {
     if (error instanceof Aborted) {
       await current.journal.flush()
@@ -571,6 +557,7 @@ async function runImport(current: Session, copy: boolean) {
   await writeIndexFile(appData, JSON.stringify(index, null, 2))
   await journal.remove()
   if (!vectors.size) await removeFile(appData, 'embeddings.bin')
+  await removeOldTagVectors(appData, tags.tagging?.file)
   // Bilder som inte finns kvar i bildbanken behöver inga miniatyrer. De tas
   // bort först när det nya indexet är sparat, så att inget försvinner om
   // skrivningen misslyckas.

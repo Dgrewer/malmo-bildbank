@@ -23,6 +23,10 @@ export interface IndexAiTagging {
   // Fingeravtryck av taggarna i app-data/config.json (src/ai/tagConfig.ts).
   // Ändras taggarna sätts AI-taggarna om för alla bilder.
   config: string
+  // Prompterna i ordning och filen i app-data/ med deras textvektorer, en rad
+  // per prompt. Saknas i index från före adminvyn AI-taggar.
+  prompts?: string[]
+  file?: string
 }
 
 export interface IndexEmbeddings {

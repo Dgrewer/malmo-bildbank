@@ -8,7 +8,7 @@ app-data/
   index.prev.json            föregående version, sparas vid varje import
   embeddings.bin             AI-vektorer för AI-sök, se nedan
   config.json                AI-taggarna, se nedan
-  ai-taggar.bin              taggarnas textvektorer, samma format som embeddings.bin
+  ai-taggar-<nyckel>.bin     taggarnas textvektorer, samma format som embeddings.bin
   import/pagaende.jsonl      pågående import, finns bara medan en import pågår eller är avbruten
   import/pagaende.bin        AI-vektorer i en pågående import, samma format som embeddings.bin
   models/<modell>/           AI-modellen, laddas ner med npm run download-model
@@ -37,7 +37,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `images` | lista | En post per bild, sorterad efter id. |
 | `duplicates` | lista | Filer som importen har valt bort som dubbletter, se Import. Varje post har `path`, `hash` och `keptId`, id:t för bilden som behölls. Saknas i äldre index. |
 | `embeddings` | objekt | AI-vektorerna i `embeddings.bin`: `file` (`"embeddings.bin"`), `model` (modellens mapp i `app-data/models/`), `dimensions` och `count`. Saknas om ingen bild har en vektor. |
-| `aiTagging` | objekt | Hur bildernas `aiTags` sattes: `model` och `config`, ett fingeravtryck av taggarna i `config.json`. Saknas om inga AI-taggar har satts. |
+| `aiTagging` | objekt | Hur bildernas `aiTags` sattes: `model`, `config` (ett fingeravtryck av taggarna i `config.json`), `prompts` (taggarnas prompter, var och en en gång) och `file` (filen i `app-data/` med prompternas textvektorer). Saknas om inga AI-taggar har satts. |
 
 ## En post
 
@@ -121,7 +121,9 @@ Filen är binär. Alla tal är little-endian.
 
 ## AI-taggar: app-data/config.json
 
-Importen sätter AI-taggar på bilderna utifrån taggarna i `config.json`. Saknas filen skapar importen den med de förvalda taggarna (`src/ai/defaultConfig.json`, cirka 240 taggar). Filen kan sedan ändras för hand.
+Importen sätter AI-taggar på bilderna utifrån taggarna i `config.json`. Saknas filen skapar importen den med de förvalda taggarna (`src/ai/defaultConfig.json`, cirka 250 taggar).
+
+Taggarna ändras i appen under Admin, fliken AI-taggar. Där väljer man en tagg och ser bilderna sorterade efter hur väl de stämmer med beskrivningen, med ett streck vid gränsen. Man flyttar gränsen med ett reglage, ändrar beskrivningen, lägger till och tar bort taggar. När man sparar skrivs `config.json` och alla bilder får nya AI-taggar direkt, utan import. Filen går också att ändra för hand.
 
 ```json
 {
@@ -140,10 +142,11 @@ Importen sätter AI-taggar på bilderna utifrån taggarna i `config.json`. Sakna
 
 - En bild får alla taggar vars likhet är minst `threshold`. Bilder utan AI-vektor får inga AI-taggar.
 - Taggar som saknar något fält, eller som redan finns tidigare i listan, används inte. Importen säger hur många det var.
-- Taggarnas textvektorer sparas i `ai-taggar.bin`, rad 1 för första taggen osv. De gäller så länge `aiTagging.config` i indexet stämmer med taggarna, så att nya bilder kan taggas utan att textmodellen körs.
-- Ändras taggarna sätts AI-taggarna om för alla bilder vid nästa import. Textmodellen räknar då om taggarnas vektorer, vilket tar runt en halv minut, men bildernas AI-vektorer räknas inte om. Förhandsvisningen säger när det kommer att ske.
-- Förvalda tröskelvärden: 0,06, och högre för allmänna taggar som "himmel" och "hamn" som annars hamnar på många bilder. De är kalibrerade mot testbilderna och kan behöva justeras för den riktiga bildbanken.
-- De förvalda taggarna beskriver motiv, platser, miljöer, aktiviteter, årstider och bildtyper. Det finns inga taggar för etnicitet, religion, hälsa, funktionsnedsättning, kön eller andra känsliga egenskaper hos personer. Lägg inte till sådana.
+- Taggarnas textvektorer sparas i `ai-taggar-<fingeravtryck>.bin`, en rad per prompt i samma ordning som `aiTagging.prompts` i indexet. Nya bilder taggas då utan att textmodellen körs, och bara nya eller ändrade prompter behöver räknas ut. Filen byter namn när taggarna ändras, och gamla filer tas bort när det nya indexet är sparat.
+- Har `config.json` ändrats för hand sätts AI-taggarna om för alla bilder vid nästa import. Förhandsvisningen säger det. Bildernas AI-vektorer räknas inte om.
+- Två taggar med samma prompt och tröskelvärde hamnar alltid på samma bilder. Så är solnedgång och soluppgång gjorda, eftersom modellen inte kan se skillnad på dem och man ska hitta alla bilderna oavsett vilket ord man söker på.
+- Förvalda tröskelvärden: 0,06, högre för allmänna taggar som "himmel" och "hamn" som annars hamnar på många bilder, och 0,05 för "kvinna" och "man" eftersom personer ofta är en liten del av bilden. De är kalibrerade mot testbilderna och kan behöva justeras för den riktiga bildbanken.
+- De förvalda taggarna beskriver motiv, platser, byggnader (även kyrka, moské och synagoga), personer (kvinna, man, barn, ungdomar, äldre, rullstol), aktiviteter (även demonstration), årstider och bildtyper. Det finns inga taggar för etnicitet eller hälsa.
 
 ## Import
 

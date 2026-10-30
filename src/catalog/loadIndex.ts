@@ -54,7 +54,7 @@ export async function readIndexFile(root: FileSystemDirectoryHandle): Promise<In
 export async function loadIndex(root: FileSystemDirectoryHandle): Promise<ImageRecord[]> {
   const index = await readIndexFile(root)
   if (!index) {
-    throw new IndexError('Hittar inte app-data/index.json. Bildbanken har inte indexerats än. Välj Importera.')
+    throw new IndexError('Hittar inte app-data/index.json. Bildbanken har inte indexerats än. Välj Admin och Importera bilder.')
   }
   return index.images
 }

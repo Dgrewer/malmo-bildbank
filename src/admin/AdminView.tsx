@@ -4,6 +4,7 @@ import { loadOriginalsFolder, saveOriginalsFolder } from '../fs/folderStore.ts'
 import { MODEL } from '../ai/modelInfo.ts'
 import type { FromWorker, ImportResult, Phase, ScanSummary, ToWorker } from '../import/protocol.ts'
 import { captureFrame } from '../import/videoFrame.ts'
+import { TagEditor } from './TagEditor.tsx'
 
 interface Props {
   // Bildbankens mapp, den som innehåller original och app-data.
@@ -58,14 +59,24 @@ function PathList({ title, items, render }: { title: string; items: unknown[]; r
   )
 }
 
-// Adminläget: välj originalmapp, se vad som har ändrats och kör importen.
-// Allt tungt arbete sker i en Web Worker (src/import/worker.ts).
+// Adminläget, med två flikar:
+// - Importera bilder: välj originalmapp, se vad som har ändrats och kör
+//   importen. Allt tungt arbete sker i en Web Worker (src/import/worker.ts).
+// - AI-taggar: ändra taggarna och deras gränser (src/admin/TagEditor.tsx).
 export function AdminView({ bank, onClose }: Props) {
   const [originals, setOriginals] = useState<Originals>({ kind: 'none' })
   const [state, setState] = useState<State>({ kind: 'idle' })
   const [changed, setChanged] = useState(false)
   // Kopiera nya original till bildbankens original/. Avstängt som standard.
   const [copy, setCopy] = useState(false)
+  const [tab, setTab] = useState<'import' | 'tags'>('import')
+  // Sant medan AI-taggarna sparas.
+  const [tagsBusy, setTagsBusy] = useState(false)
+  // Fliken AI-taggar läses in första gången den öppnas.
+  const tagsOpened = useRef(false)
+  if (tab === 'tags' && !tagsOpened.current) tagsOpened.current = true
+  // Antal klara importer. Fliken AI-taggar läses in på nytt efter varje.
+  const [imports, setImports] = useState(0)
   const worker = useRef<Worker | null>(null)
 
   // Har användaren valt bildbankens egen original/ finns inget att kopiera.
@@ -119,6 +130,7 @@ export function AdminView({ bank, onClose }: Props) {
         setState({ kind: 'aborted', phase: message.phase, done: message.done, total: message.total })
       } else if (message.type === 'imported') {
         setChanged(true)
+        setImports((n) => n + 1)
         setState({ kind: 'done', result: message.result })
       } else setState({ kind: 'idle', error: message.message })
     }
@@ -177,16 +189,54 @@ export function AdminView({ bank, onClose }: Props) {
     send({ type: 'abort' })
   }
 
-  const busy = state.kind === 'running'
+  const busy = state.kind === 'running' || tagsBusy
 
   return (
     <main className="admin">
       <div className="admin-header">
-        <h2>Importera bilder</h2>
+        <h2>Admin</h2>
+        <nav className="admin-tabs" aria-label="Admin">
+          {(
+            [
+              ['import', 'Importera bilder'],
+              ['tags', 'AI-taggar'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={tab === id ? 'selected' : undefined}
+              aria-current={tab === id ? 'page' : undefined}
+              disabled={busy && tab !== id}
+              onClick={() => setTab(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
         <button type="button" disabled={busy} onClick={() => onClose(changed)}>
           Tillbaka till bildbanken
         </button>
       </div>
+
+      {/* Fliken ligger kvar när man byter, så att osparade ändringar finns kvar.
+          Efter en import läses taggarna in på nytt. */}
+      <div hidden={tab !== 'tags'}>
+        {tagsOpened.current && (
+          <TagEditor
+            key={imports}
+            bank={bank}
+            onSaved={() => {
+              setChanged(true)
+              // En sökning före sparandet visar gamla AI-taggar. Sök igen.
+              setState((current) => (current.kind === 'preview' ? { kind: 'idle' } : current))
+            }}
+            onBusy={setTagsBusy}
+          />
+        )}
+      </div>
+
+      <div hidden={tab !== 'import'}>
 
       <section className="admin-folders">
         <div>
@@ -350,6 +400,7 @@ export function AdminView({ bank, onClose }: Props) {
           />
         </section>
       )}
+      </div>
     </main>
   )
 }

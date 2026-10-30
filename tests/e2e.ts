@@ -502,6 +502,16 @@ async function writeOpfs(page: Page, path: string, text: string) {
   )
 }
 
+// Filerna med taggarnas textvektorer i en bildbanks app-data.
+async function tagVectorFiles(page: Page, bank: string): Promise<string[]> {
+  return page.evaluate(async (bank) => {
+    const appData = await (await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)).getDirectoryHandle('app-data')
+    const names: string[] = []
+    for await (const name of appData.keys()) if (name.startsWith('ai-taggar')) names.push(name)
+    return names.sort()
+  }, bank)
+}
+
 // Läser en fil i OPFS som bytes, t.ex. "importtest/app-data/embeddings.bin".
 async function readOpfsBytes(page: Page, path: string): Promise<Buffer | null> {
   const base64 = await page.evaluate(async (path) => {
@@ -925,7 +935,7 @@ try {
     importPage = await openPage(`/?testdata&originals&fresh&name=${bank}`)
     const page = importPage
     await waitForText(page, 'Hittar inte app-data/index.json', 600_000)
-    await clickButton(page, 'Importera')
+    await clickButton(page, 'Admin')
     // Bildbankens egen mapp väljs automatiskt.
     await waitForText(page, `Bildbankens egen mapp ${bank} › Original`)
     assert(!(await page.$('::-p-text(Använd bildbankens egen mapp)')), 'Knappen för bildbankens egen mapp visas fast den redan är vald')
@@ -1137,10 +1147,15 @@ try {
       defaults.aiTags.every((tag) => tag.prompt && typeof tag.threshold === 'number'),
       'En förvald tagg saknar prompt eller tröskelvärde',
     )
-    // Inga taggar för känsliga egenskaper hos personer.
-    const sensitive = /etni|hudfärg|religi|muslim|kristen|jud|kyrka|moské|sjuk|hälsa|funktionsned|rullstol|gravid|kvinna|\bman\b|sexuell|politi|demonstr/i
-    const found = names.filter((name) => sensitive.test(name))
-    assert(!found.length, `Känsliga förvalda taggar: ${found.join(', ')}`)
+    for (const wanted of ['kvinna', 'man', 'kyrka', 'moské', 'rullstol', 'demonstration', 'solnedgång', 'soluppgång']) {
+      assert(names.includes(wanted), `Taggen ${wanted} saknas bland de förvalda`)
+    }
+    // Det går inte att se skillnad på soluppgång och solnedgång, så bilderna får båda.
+    const [sunset, sunrise] = ['solnedgång', 'soluppgång'].map((name) => defaults.aiTags.find((tag) => tag.tag === name)!)
+    assert(
+      sunset.prompt === sunrise.prompt && sunset.threshold === sunrise.threshold,
+      'Solnedgång och soluppgång har olika beskrivning eller gräns',
+    )
 
     // Första importen skapade config.json med de förvalda taggarna och satte AI-taggar.
     const config = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
@@ -1176,9 +1191,15 @@ try {
     await waitForText(page, '1 taggar i app-data/config.json saknar')
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
     assert(index.aiTagging && index.aiTagging.config !== firstIndex!.aiTagging!.config, 'aiTagging ändrades inte')
-    const tagVectors = await readOpfsBytes(page, `${bank}/app-data/ai-taggar.bin`)
+    // Båda taggarna har samma beskrivning, så det finns en textvektor.
+    assert(JSON.stringify(index.aiTagging.prompts) === '["a photo"]', `prompts: ${index.aiTagging.prompts}`)
+    const tagVectors = await readOpfsBytes(page, `${bank}/app-data/${index.aiTagging.file}`)
     const tagRows = tagVectors && decodeVectors(toArrayBuffer(tagVectors), MODEL.dimensions)
-    assert(tagRows?.size === 2, `ai-taggar.bin har ${tagRows?.size} rader, väntade 2`)
+    assert(tagRows?.size === 1, `${index.aiTagging.file} har ${tagRows?.size} rader, väntade 1`)
+    assert(
+      JSON.stringify(await tagVectorFiles(page, bank)) === JSON.stringify([index.aiTagging.file]),
+      `Gamla textvektorer ligger kvar: ${await tagVectorFiles(page, bank)}`,
+    )
     for (const image of index.images) {
       const wanted = image.previewProblem ? [] : ['alla']
       assert(JSON.stringify(image.aiTags) === JSON.stringify(wanted), `${image.id} har ${image.aiTags}, väntade ${wanted}`)
@@ -1202,6 +1223,73 @@ try {
     } finally {
       await viewer.close()
     }
+  })
+
+  await test('4.5 AI-taggarna går att ändra i Admin, AI-taggar', async () => {
+    const page = importPage!
+    await clickButton(page, 'AI-taggar')
+    await waitForText(page, 'Välj en tagg i listan', 60_000)
+    const hits = async () => {
+      await page.waitForFunction(() => /får taggen\.$/.test(document.querySelector('.tag-hits')?.textContent ?? ''), {
+        timeout: 60_000,
+      })
+      const text = await page.$eval('.tag-hits', (element) => element.textContent!)
+      return Number(text.match(/^([\d\s ]+) av/)![1].replace(/\D/g, ''))
+    }
+    const selectTag = async (name: string) => {
+      await page.locator(`.tag-names button::-p-text(${name})`).click()
+      await page.waitForSelector(`.tag-fields input[value="${name}"]`, { timeout: 5_000 })
+    }
+
+    // En ny tagg. Reglaget längst till vänster ger gränsen 0.
+    await clickButton(page, '+ Ny tagg')
+    const [tagInput, promptInput] = await page.$$('.tag-fields input')
+    await tagInput.type('röd')
+    await promptInput.click({ count: 3 })
+    await promptInput.type('a red image')
+    await page.focus('.tag-threshold input[type="range"]')
+    await page.keyboard.press('Home')
+    await waitForText(page, 'Gräns: 0,000')
+    const red = await hits()
+    assert(red > 0, 'Ingen bild får den nya taggen med gränsen 0')
+    await screenshot(page, '4.5-ai-taggar-admin')
+
+    // Gränsen längst till höger: inga bilder.
+    await selectTag('alla')
+    await page.focus('.tag-threshold input[type="range"]')
+    await page.keyboard.press('End')
+    await waitForText(page, 'Gräns: 0,150')
+    assert((await hits()) === 0, 'Bilder får taggen med högsta gränsen')
+
+    await selectTag('ingen')
+    await clickButton(page, 'Ta bort taggen')
+    await waitForText(page, 'Tas bort när du sparar: ingen')
+    await clickButton(page, 'Spara ändringar')
+    await waitForText(page, 'Sparat.', 120_000)
+
+    const config = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    assert(
+      JSON.stringify(config.aiTags) ===
+        JSON.stringify([
+          { tag: 'röd', prompt: 'a red image', threshold: 0 },
+          { tag: 'alla', prompt: 'a photo', threshold: 0.15 },
+        ]),
+      `config.json: ${JSON.stringify(config.aiTags)}`,
+    )
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    const withRed = index.images.filter((image) => image.aiTags.includes('röd')).length
+    assert(withRed === red, `${withRed} bilder fick taggen röd, adminvyn sa ${red}`)
+    assert(!index.images.some((image) => image.aiTags.some((tag) => tag !== 'röd')), 'Bilder har kvar borttagna taggar')
+    assert(
+      JSON.stringify(await tagVectorFiles(page, bank)) === JSON.stringify([index.aiTagging!.file]),
+      `Gamla textvektorer ligger kvar: ${await tagVectorFiles(page, bank)}`,
+    )
+
+    // Importen ser att taggarna redan är satta.
+    await clickButton(page, 'Importera bilder')
+    await clickButton(page, 'Sök efter ändringar')
+    await waitForPreview(page)
+    assert(!(await page.$('::-p-text(Alla bilder får nya AI-taggar)')), 'Importen vill sätta om taggarna som adminvyn satte')
   })
 
   await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {
@@ -1501,7 +1589,7 @@ try {
       ;(window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker =
         async () => external
     })
-    await clickButton(page, 'Importera')
+    await clickButton(page, 'Admin')
     // Bildbankens egen mapp går inte att välja som originalmapp.
     await page.evaluate(async () => {
       const bank = await (await navigator.storage.getDirectory()).getDirectoryHandle('kopiabank')
