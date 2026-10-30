@@ -29,6 +29,7 @@ import {
   type PromptVectors,
 } from '../ai/tagging.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
+import { buildVocabulary, suggestTags, unknownKeywords, wordKey, type Vocabulary } from '../catalog/vocabulary.ts'
 import type { ImageRecord, IndexFile } from '../catalog/types.ts'
 import { ensureDirectory, readFile, writeFile } from '../fs/folder.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
@@ -76,6 +77,7 @@ const SHOWN_ABOVE = 48
 const SHOWN_BELOW = 24
 const UNTAGGED = -1
 const ALL_IMAGES = -2
+const KEYWORDS = -3
 // Bilder som visas åt gången i bildvyerna.
 const PAGE = 60
 // Beskrivningar som textmodellen tar åt gången i adminvyn. Modellen körs i
@@ -114,6 +116,13 @@ const same = (a: AiTag, b: AiTag) =>
   a.prompt === b.prompt &&
   a.threshold === b.threshold &&
   LISTS.every((list) => (a[list] ?? []).join('\n') === (b[list] ?? []).join('\n'))
+// Andra taggar som ett nytt namn liknar eller redan är ett annat ord för.
+function similarTags(name: string, vocabulary: Vocabulary): string[] {
+  const wanted = name.trim()
+  if (!wanted) return []
+  const { exact, near } = suggestTags(wanted, vocabulary)
+  return [...new Set([exact, ...near])].filter((tag): tag is string => !!tag && tag !== wanted)
+}
 // Listan utan id, eller undefined om den blir tom.
 const without = (list: string[] | undefined, id: string) => {
   const rest = (list ?? []).filter((other) => other !== id)
@@ -201,6 +210,9 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
       cancelled = true
     }
   }, [bank])
+
+  // Ordlistan som den blir med utkastet: synonymer, taggar som hör ihop och dolda nyckelord.
+  const vocabulary = useMemo(() => buildVocabulary(toConfig(drafts)), [drafts])
 
   if (state.kind === 'loading') return <p className="status">Läser AI-taggarna…</p>
   if (state.kind === 'error') {
@@ -304,6 +316,38 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
     })
   }
 
+  // Tar ut en tagg ur sin grupp: alla kopplingar till och från den tas bort.
+  function leaveGroup(name: string) {
+    change((all) => ({
+      ...all,
+      tags: all.tags.map((draft) =>
+        draft.tag === name
+          ? { ...draft, related: undefined }
+          : draft.related
+            ? { ...draft, related: without(draft.related.filter((other) => wordKey(other) !== wordKey(name)), '') }
+            : draft,
+      ),
+    }))
+  }
+
+  // Kopplar ett nyckelord till en tagg: ordet blir en synonym till taggen.
+  function mapKeyword(word: string, name: string) {
+    change((all) => ({
+      ...all,
+      tags: all.tags.map((draft) =>
+        draft.tag === name ? { ...draft, synonyms: [...(draft.synonyms ?? []), word.trim()] } : draft,
+      ),
+    }))
+  }
+
+  function selectByName(name: string) {
+    const draft = drafts.tags.find((tag) => tag.tag === name)
+    if (draft) {
+      setSelected(draft.key)
+      setFilter('')
+    }
+  }
+
   // Ångrar en rättning för hand: bilden får taggen om värdet räcker.
   function clearImageTag(id: string, name: string) {
     change((all) => ({
@@ -321,11 +365,23 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
     setMessage(null)
     onBusy(true)
     try {
-      const config = toConfig(drafts)
+      // Har en tagg bytt namn följer taggarna som hör ihop med den med.
+      const renames = new Map<string, string>()
+      for (const draft of drafts.tags) {
+        const before = savedByKey.get(draft.key)
+        if (before && before.tag !== draft.tag.trim()) renames.set(before.tag, draft.tag.trim())
+      }
+      const renamed = {
+        ...drafts,
+        tags: drafts.tags.map((draft) =>
+          draft.related ? { ...draft, related: draft.related.map((name) => renames.get(name) ?? name) } : draft,
+        ),
+      }
+      const config = toConfig(renamed)
       const index = await save(bank, config, vectors.current, (done, total) => setSaving({ done, total }))
       const saved = {
-        ...drafts,
-        tags: drafts.tags.map((draft) => ({ ...draft, tag: draft.tag.trim(), prompt: draft.prompt.trim() })),
+        ...renamed,
+        tags: renamed.tags.map((draft) => ({ ...draft, tag: draft.tag.trim(), prompt: draft.prompt.trim() })),
       }
       setDrafts(saved)
       setState({ kind: 'ready', data: { ...data, index, byId: new Map(index.images.map((i) => [i.id, i])), saved } })
@@ -441,6 +497,14 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           >
             Alla bilder och deras taggar
           </button>
+          <button
+            type="button"
+            className={selected === KEYWORDS ? 'selected' : undefined}
+            aria-current={selected === KEYWORDS}
+            onClick={() => setSelected(KEYWORDS)}
+          >
+            Okända nyckelord
+          </button>
           <input
             type="search"
             placeholder="Sök bland taggarna"
@@ -478,13 +542,30 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           )}
         </aside>
 
-        {selected === UNTAGGED || selected === ALL_IMAGES ? (
+        {selected === KEYWORDS ? (
+          <KeywordsView
+            images={data.index.images}
+            vocabulary={vocabulary}
+            hidden={drafts.hiddenKeywords}
+            disabled={!!saving}
+            onMap={mapKeyword}
+            onHide={(word, hide) =>
+              change((all) => ({
+                ...all,
+                hiddenKeywords: hide
+                  ? [...all.hiddenKeywords, word]
+                  : all.hiddenKeywords.filter((other) => wordKey(other) !== wordKey(word)),
+              }))
+            }
+          />
+        ) : selected === UNTAGGED || selected === ALL_IMAGES ? (
           <ImagesView
             bank={bank}
             onlyUntagged={selected === UNTAGGED}
             drafts={drafts}
             data={data}
             vectors={vectors.current}
+            vocabulary={vocabulary}
             disabled={!!saving}
             onSet={setImageTag}
             onClear={clearImageTag}
@@ -497,12 +578,18 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
             nameTaken={drafts.tags.some(
               (draft) => draft.key !== current.key && draft.tag.trim().toLowerCase() === current.tag.trim().toLowerCase(),
             )}
+            similar={
+              savedByKey.get(current.key)?.tag === current.tag.trim() ? [] : similarTags(current.tag, vocabulary)
+            }
             savedName={savedByKey.get(current.key)?.tag ?? null}
             data={data}
             vectors={vectors.current}
+            vocabulary={vocabulary}
             disabled={!!saving}
             onChange={(patch) => update(current.key, patch)}
             onRemove={() => remove(current.key)}
+            onSelect={selectByName}
+            onLeaveGroup={leaveGroup}
           />
         ) : (
           <p className="tag-placeholder">Välj en tagg i listan, eller lägg till en ny.</p>
@@ -566,16 +653,36 @@ interface DetailProps {
   draft: Draft
   // Sant om en annan tagg redan har samma namn.
   nameTaken: boolean
+  // Andra taggar som ett nytt namn liknar.
+  similar: string[]
   // Taggens namn som det är sparat, eller null för en ny tagg.
   savedName: string | null
   data: Loaded
   vectors: PromptVectors
+  vocabulary: Vocabulary
   disabled: boolean
   onChange: (patch: Partial<AiTag>) => void
   onRemove: () => void
+  onSelect: (tag: string) => void
+  // Tar ut taggen ur gruppen av taggar som hör ihop.
+  onLeaveGroup: (tag: string) => void
 }
 
-function TagDetail({ bank, draft, nameTaken, savedName, data, vectors, disabled, onChange, onRemove }: DetailProps) {
+function TagDetail({
+  bank,
+  draft,
+  nameTaken,
+  similar,
+  savedName,
+  data,
+  vectors,
+  vocabulary,
+  disabled,
+  onChange,
+  onRemove,
+  onSelect,
+  onLeaveGroup,
+}: DetailProps) {
   const prompt = draft.prompt.trim()
   const examples = draft.examples ?? []
   const byExamples = examples.length > 0
@@ -674,6 +781,17 @@ function TagDetail({ bank, draft, nameTaken, savedName, data, vectors, disabled,
             </small>
           )}
         </label>
+        {!nameTaken && similar.length > 0 && (
+          <p className="warning similar-tags" role="status">
+            Det finns redan en liknande tagg:{' '}
+            {similar.map((tag) => (
+              <button key={tag} type="button" className="chip" onClick={() => onSelect(tag)}>
+                {tag}
+              </button>
+            ))}{' '}
+            Använd hellre den, eller lägg till ditt ord som ett annat ord för den, så att alla taggar samma sak.
+          </p>
+        )}
         <label>
           Beskrivning för AI:n, på engelska
           <input
@@ -689,6 +807,36 @@ function TagDetail({ bank, draft, nameTaken, savedName, data, vectors, disabled,
           </small>
         </label>
       </div>
+
+      <WordList
+        title="Andra ord för samma sak"
+        explain="Synonymer, engelska ord och vanliga felstavningar, t.ex. ”turningtorso” för Turning Torso. Bilder vars nyckelord är något av orden visas med den här taggen, och skriver någon ordet föreslås den här taggen."
+        words={draft.synonyms ?? []}
+        placeholder="Lägg till ord"
+        disabled={disabled}
+        check={(word) => {
+          const owner = vocabulary.byWord.get(wordKey(word))
+          return owner ? `”${word}” ${owner === draft.tag.trim() ? 'finns redan' : `hör redan till taggen ${owner}`}.` : null
+        }}
+        onAdd={(word) => onChange({ synonyms: [...(draft.synonyms ?? []), word] })}
+        onRemove={(word) => onChange({ synonyms: without(draft.synonyms, word) })}
+      />
+      <WordList
+        title="Hör ihop med"
+        explain="Taggar som ska visas tillsammans, t.ex. restaurang och kafé eller butik och affär. Har en bild den ena taggen visas den med alla i gruppen. Det påverkar inte vilka AI-taggar AI:n sätter."
+        words={(vocabulary.groups.get(draft.tag.trim()) ?? []).filter((name) => name !== draft.tag.trim())}
+        placeholder="Lägg till tagg"
+        list="tag-name-list"
+        options={vocabulary.names}
+        disabled={disabled}
+        check={(word) => {
+          const name = vocabulary.byWord.get(wordKey(word))
+          if (!name) return `Det finns ingen tagg som heter ”${word}”.`
+          return name === draft.tag.trim() ? 'Taggen hör alltid ihop med sig själv.' : null
+        }}
+        onAdd={(word) => onChange({ related: [...(draft.related ?? []), vocabulary.byWord.get(wordKey(word))!] })}
+        onRemove={onLeaveGroup}
+      />
 
       <div className="tag-examples">
         <h4>Exempelbilder</h4>
@@ -917,6 +1065,7 @@ interface ImagesProps {
   drafts: Drafts
   data: Loaded
   vectors: PromptVectors
+  vocabulary: Vocabulary
   disabled: boolean
   onSet: (id: string, tag: string, on: boolean) => void
   onClear: (id: string, tag: string) => void
@@ -984,7 +1133,17 @@ function imageTags(config: BankConfig, data: Loaded, vectors: PromptVectors): Im
 
 // Bilderna med taggarna de får. Ett klick på en tagg markerar den, ett klick
 // till tar bort den från bilden. Nya taggar skrivs in under bilden.
-function ImagesView({ bank, onlyUntagged, drafts, data, vectors, disabled, onSet, onClear }: ImagesProps) {
+function ImagesView({
+  bank,
+  onlyUntagged,
+  drafts,
+  data,
+  vectors,
+  vocabulary,
+  disabled,
+  onSet,
+  onClear,
+}: ImagesProps) {
   const [ready, setReady] = useState<{ config: BankConfig } | { error: string } | null>(null)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [shown, setShown] = useState(PAGE)
@@ -1069,6 +1228,7 @@ function ImagesView({ bank, onlyUntagged, drafts, data, vectors, disabled, onSet
             thumbs={data.thumbs}
             disabled={disabled}
             showNear={onlyUntagged}
+            suggest={(word) => suggestTags(word, vocabulary)}
             onSet={(tag, on) => onSet(item.image.id, tag, on)}
             onClear={(tag) => onClear(item.image.id, tag)}
           />
@@ -1088,6 +1248,7 @@ function ImageTagsThumb({
   thumbs,
   disabled,
   showNear,
+  suggest,
   onSet,
   onClear,
 }: {
@@ -1095,6 +1256,7 @@ function ImageTagsThumb({
   thumbs: FileSystemDirectoryHandle
   disabled: boolean
   showNear: boolean
+  suggest: (word: string) => { exact: string | null; near: string[] }
   onSet: (tag: string, on: boolean) => void
   onClear: (tag: string) => void
 }) {
@@ -1102,11 +1264,24 @@ function ImageTagsThumb({
   // Taggen som är markerad för borttagning. Nästa klick tar bort den.
   const [armed, setArmed] = useState<string | null>(null)
   const [text, setText] = useState('')
+  // Ett nytt ord som liknar befintliga taggar. Användaren väljer en av dem eller ordet.
+  const [ask, setAsk] = useState<{ word: string; near: string[] } | null>(null)
 
-  function add() {
-    if (!text.trim()) return
-    onSet(text, true)
+  function choose(tag: string) {
+    onSet(tag, true)
     setText('')
+    setAsk(null)
+  }
+
+  // Finns ordet i ordlistan används den taggen, t.ex. Turning Torso för
+  // "turningtorso". Liknar det en tagg frågar appen först.
+  function add() {
+    const word = text.trim()
+    if (!word) return
+    const { exact, near } = suggest(word)
+    if (exact) choose(exact)
+    else if (near.length) setAsk({ word, near })
+    else choose(word)
   }
 
   return (
@@ -1181,12 +1356,209 @@ function ImageTagsThumb({
           aria-label={`Lägg till tagg på ${item.image.id}`}
           value={text}
           disabled={disabled}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            setText(event.target.value)
+            setAsk(null)
+          }}
         />
         <button type="submit" disabled={disabled || !text.trim()} aria-label="Lägg till">
           +
         </button>
       </form>
+      {ask && (
+        <p className="did-you-mean" role="status">
+          Menade du{' '}
+          {ask.near.map((tag) => (
+            <button key={tag} type="button" className="chip" disabled={disabled} onClick={() => choose(tag)}>
+              {tag}
+            </button>
+          ))}
+          ?{' '}
+          <button type="button" className="chip suggestion" disabled={disabled} onClick={() => choose(ask.word)}>
+            Nej, ny tagg ”{ask.word}”
+          </button>
+        </p>
+      )}
+    </li>
+  )
+}
+
+// En lista med ord som går att lägga till och ta bort.
+function WordList({
+  title,
+  explain,
+  words,
+  placeholder,
+  list,
+  options,
+  disabled,
+  check,
+  onAdd,
+  onRemove,
+}: {
+  title: string
+  explain: string
+  words: string[]
+  placeholder: string
+  list?: string
+  options?: string[]
+  disabled: boolean
+  // Ett felmeddelande om ordet inte går att lägga till, annars null.
+  check: (word: string) => string | null
+  onAdd: (word: string) => void
+  onRemove: (word: string) => void
+}) {
+  const [text, setText] = useState('')
+  const problem = text.trim() ? check(text.trim()) : null
+  return (
+    <div className="word-list">
+      <h4>{title}</h4>
+      <p className="tag-explain">{explain}</p>
+      <ul className="image-tag-chips">
+        {words.map((word) => (
+          <li key={word}>
+            <button type="button" className="chip" disabled={disabled} title="Ta bort" onClick={() => onRemove(word)}>
+              {word} ✕
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="add-tag"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!text.trim() || problem) return
+          onAdd(text.trim())
+          setText('')
+        }}
+      >
+        <input
+          type="text"
+          list={list}
+          placeholder={placeholder}
+          aria-label={`${title}: ${placeholder}`}
+          value={text}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button type="submit" disabled={disabled || !text.trim() || !!problem}>
+          Lägg till
+        </button>
+      </form>
+      {problem && <small className="error">{problem}</small>}
+      {list && options && (
+        <datalist id={list}>
+          {options.map((name) => (
+            <option key={name} value={name} />
+          ))}
+        </datalist>
+      )}
+    </div>
+  )
+}
+
+// Nyckelord från bildfilerna som inte finns i ordlistan. De kopplas till en
+// tagg, som ett annat ord för den, eller döljs.
+function KeywordsView({
+  images,
+  vocabulary,
+  hidden,
+  disabled,
+  onMap,
+  onHide,
+}: {
+  images: ImageRecord[]
+  vocabulary: Vocabulary
+  hidden: string[]
+  disabled: boolean
+  onMap: (word: string, tag: string) => void
+  onHide: (word: string, hide: boolean) => void
+}) {
+  const unknown = useMemo(() => unknownKeywords(images, vocabulary), [images, vocabulary])
+  return (
+    <div className="tag-detail keywords-view">
+      <h4>Okända nyckelord</h4>
+      <p className="tag-explain">
+        Nyckelord som fotografen eller bildbyrån har skrivit in i bildfilerna, och som inte finns i ordlistan. De visas
+        som taggar som de är. Koppla ett ord till en tagg, t.ex. ”fountain” till fontän, så visas bilderna med den
+        taggen. Dölj ord som inte säger något om bilden. Inget ändras förrän du trycker Spara ändringar.
+      </p>
+      <p className="tag-hits" role="status">
+        {count(unknown.length)} okända nyckelord.
+      </p>
+      <datalist id="keyword-tag-list">
+        {vocabulary.names.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+      <ul className="keyword-rows">
+        {unknown.slice(0, 200).map(({ word, count: images }) => (
+          <KeywordRow key={word} word={word} images={images} vocabulary={vocabulary} disabled={disabled} onMap={onMap} onHide={onHide} />
+        ))}
+      </ul>
+      {hidden.length > 0 && (
+        <>
+          <h4>Dolda nyckelord</h4>
+          <ul className="image-tag-chips">
+            {hidden.map((word) => (
+              <li key={word}>
+                <button type="button" className="chip removed" disabled={disabled} title="Visa igen" onClick={() => onHide(word, false)}>
+                  <s>{word}</s> ↶
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  )
+}
+
+function KeywordRow({
+  word,
+  images,
+  vocabulary,
+  disabled,
+  onMap,
+  onHide,
+}: {
+  word: string
+  images: number
+  vocabulary: Vocabulary
+  disabled: boolean
+  onMap: (word: string, tag: string) => void
+  onHide: (word: string, hide: boolean) => void
+}) {
+  const [text, setText] = useState('')
+  const tag = vocabulary.byWord.get(wordKey(text))
+  return (
+    <li data-word={word}>
+      <span>
+        <strong>{word}</strong> <small>{count(images)} bilder</small>
+      </span>
+      <form
+        className="add-tag"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (tag) onMap(word, tag)
+        }}
+      >
+        <input
+          type="text"
+          list="keyword-tag-list"
+          placeholder="Tagg"
+          aria-label={`Koppla ${word} till tagg`}
+          value={text}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button type="submit" disabled={disabled || !tag}>
+          Koppla
+        </button>
+      </form>
+      <button type="button" disabled={disabled} onClick={() => onHide(word, true)}>
+        Dölj
+      </button>
     </li>
   )
 }

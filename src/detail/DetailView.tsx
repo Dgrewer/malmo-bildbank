@@ -2,23 +2,37 @@ import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
+import type { ShownTag } from '../catalog/vocabulary.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 interface Props {
   image: ImageRecord
+  // Bildens taggar: nyckelorden från filen och AI-taggarna, på svenska via ordlistan.
+  tags: ShownTag[]
   // Bildens plats i galleriet, från 0, och antalet bilder.
   position: number
   count: number
   previews: FileSystemDirectoryHandle
   onNavigate: (position: number) => void
+  // Visar alla bilder med taggen i galleriet.
+  onTag: (tag: string) => void
   onClose: () => void
 }
 
-function TagList({ tags }: { tags: string[] }) {
+function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => void }) {
   return (
     <ul className="tag-list">
-      {tags.map((tag) => (
-        <li key={tag}>{tag}</li>
+      {tags.map(({ tag, ai }) => (
+        <li key={tag}>
+          <button
+            type="button"
+            className={ai ? 'ai' : undefined}
+            title={`Visa alla bilder med taggen ${tag}${ai ? '. Satt av AI.' : ''}`}
+            onClick={() => onTag(tag)}
+          >
+            {tag}
+          </button>
+        </li>
       ))}
     </ul>
   )
@@ -27,7 +41,7 @@ function TagList({ tags }: { tags: string[] }) {
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
-export function DetailView({ image, position, count, previews, onNavigate, onClose }: Props) {
+export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
   const expired = rightsExpired(image)
@@ -163,17 +177,20 @@ export function DetailView({ image, position, count, previews, onNavigate, onClo
           </dd>
           <dt>Samtycke</dt>
           <dd>{CONSENT_TEXT[image.consent]}</dd>
-          <dt>Nyckelord</dt>
-          <dd>{image.tags.length ? <TagList tags={image.tags} /> : 'Inga nyckelord'}</dd>
-          {image.aiTags.length > 0 && (
-            <>
-              <dt>AI-taggar</dt>
-              <dd className="ai-tags">
-                <TagList tags={image.aiTags} />
-                <span className="ai-tags-note">Satta av AI. De kan vara fel.</span>
-              </dd>
-            </>
-          )}
+          <dt>Taggar</dt>
+          <dd className="detail-tags">
+            {tags.length ? (
+              <>
+                <TagList tags={tags} onTag={onTag} />
+                <span className="tags-note">
+                  Klicka på en tagg för att se alla bilder med den.
+                  {tags.some((tag) => tag.ai) && ' Streckade taggar har AI:n satt, och de kan vara fel.'}
+                </span>
+              </>
+            ) : (
+              'Inga taggar'
+            )}
+          </dd>
         </dl>
       </div>
     </dialog>

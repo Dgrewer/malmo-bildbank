@@ -1222,18 +1222,44 @@ try {
     await waitForPreview(page)
     assert(!(await page.$('::-p-text(Alla bilder får nya AI-taggar)')), 'AI-taggarna sätts om fast inget har ändrats')
 
-    // Detaljvyn visar AI-taggarna skilt från nyckelorden.
+    // Detaljvyn visar taggarna, AI-taggarna streckade. Ett klick på en tagg
+    // visar bilderna med den i galleriet.
     const viewer = await openPage(`/?testdata&name=${bank}&keep`)
     try {
       await viewer.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
       await viewer.locator('.gallery-cell[data-index="0"]').click()
-      await viewer.waitForSelector('dialog.detail[open] .ai-tags', { timeout: 10_000 })
-      const shown = await viewer.$eval('dialog.detail[open] .ai-tags', (element) => (element as HTMLElement).innerText)
-      assert(shown.includes('alla') && shown.includes('Satta av AI'), `Detaljvyn visar AI-taggarna så här: ${shown}`)
+      await viewer.waitForSelector('dialog.detail[open] .detail-tags button.ai', { timeout: 10_000 })
+      const shown = await viewer.$eval('dialog.detail[open] .detail-tags', (element) => (element as HTMLElement).innerText)
+      assert(shown.includes('alla') && shown.includes('Streckade taggar har AI:n satt'), `Detaljvyn visar taggarna så här: ${shown}`)
       await screenshot(viewer, '4.5-ai-taggar')
+      await step('Taggen alla i detaljvyn', viewer.locator('dialog.detail[open] .detail-tags button::-p-text(alla)').click())
+      const withAll = index.images.filter((image) => image.aiTags.includes('alla')).length
+      await waitForText(viewer, `Bilder med taggen alla · ${withAll.toLocaleString('sv-SE')} bilder`)
+      assert(!(await viewer.$('dialog.detail[open]')), 'Detaljvyn är kvar efter klick på en tagg')
+      await clickButton(viewer, 'Visa alla bilder')
+      await viewer.waitForFunction(() => !document.querySelector('.filter-bar'), { timeout: 5_000 })
     } finally {
       await viewer.close()
     }
+  })
+
+  await test('4.5 ordlistan översätter nyckelord, föreslår taggar och lägger till taggar som hör ihop', async () => {
+    const { buildVocabulary, shownTags, suggestTags } = await import('../src/catalog/vocabulary.ts')
+    const defaults = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8'))
+    const vocabulary = buildVocabulary({ ...defaults, hiddenKeywords: ['ornament'] })
+    const tags = shownTags({ tags: ['town hall', 'turningtorso', 'Västra hamnen', 'ornament'], aiTags: ['butik', 'rådhus'] }, vocabulary)
+    const names = tags.map((tag) => tag.tag)
+    assert(
+      JSON.stringify(names) === JSON.stringify(['rådhus', 'Turning Torso', 'Västra hamnen', 'butik', 'affär']),
+      `Taggarna blev ${names}`,
+    )
+    assert(!tags.find((tag) => tag.tag === 'rådhus')!.ai, 'rådhus kommer från ett nyckelord men visas som AI-tagg')
+    assert(tags.find((tag) => tag.tag === 'affär')!.ai, 'affär hör ihop med AI-taggen butik och ska vara AI')
+    assert(suggestTags('turning-torso', vocabulary).exact === 'Turning Torso', 'turning-torso hittar inte Turning Torso')
+    const near = suggestTags('Turnig Torso', vocabulary)
+    assert(!near.exact && near.near.includes('Turning Torso'), `Turnig Torso föreslår ${JSON.stringify(near)}`)
+    assert(suggestTags('kafe', vocabulary).near.includes('kafé'), 'kafe föreslår inte kafé')
+    assert(!suggestTags('Malmöhus', vocabulary).exact, 'Malmöhus får inte vara en annan tagg')
   })
 
   await test('4.5 AI-taggarna går att ändra i Admin, AI-taggar', async () => {
@@ -1405,6 +1431,30 @@ try {
     await page.click(`${chip}.removed`)
     await step('ångrad tagg', page.waitForFunction((selector) => !document.querySelector(selector), { timeout: 30_000 }, `${chip}.removed`))
     await clickButton(page, 'Ångra ändringar')
+
+    // Okända nyckelord: ett kopplas till taggen alla, ett döljs.
+    await clickButton(page, 'Okända nyckelord')
+    await page.waitForSelector('.keyword-rows li', { timeout: 30_000 })
+    const [mapped, hiddenWord] = await page.$$eval('.keyword-rows li strong', (elements) =>
+      elements.slice(0, 2).map((element) => element.textContent!),
+    )
+    const row = (word: string) => `.keyword-rows li[data-word=${JSON.stringify(word)}]`
+    await page.type(`${row(mapped)} input`, 'alla')
+    await page.click(`${row(mapped)} button[type="submit"]`)
+    await page.click(`${row(hiddenWord)} > button`)
+    await page.waitForFunction(
+      (words) => ![...document.querySelectorAll('.keyword-rows li strong')].some((s) => words.includes(s.textContent!)),
+      { timeout: 5_000 },
+      [mapped, hiddenWord],
+    )
+    await clickButton(page, 'Spara ändringar')
+    await waitForText(page, 'Sparat.', 120_000)
+    const withWords = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    assert(
+      withWords.aiTags.find((tag: { tag: string }) => tag.tag === 'alla').synonyms?.includes(mapped) &&
+        withWords.hiddenKeywords?.includes(hiddenWord),
+      `config.json: synonymer ${JSON.stringify(withWords.aiTags.find((tag: { tag: string }) => tag.tag === 'alla'))}, dolda ${withWords.hiddenKeywords}`,
+    )
 
     // De förvalda taggarna läggs till, och de egna taggarna röd, alla och nyplats finns kvar.
     const defaultCount = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8')).aiTags.length as number

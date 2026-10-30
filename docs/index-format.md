@@ -133,7 +133,20 @@ Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ä
 - Återställ förvalda taggar: förvalda taggar får tillbaka sina förvalda beskrivningar och gränser, och förvalda taggar som har tagits bort läggs tillbaka. Egna taggar, taggar med exempelbilder och listorna Inte rätt ändras inte. Inget sparas förrän man trycker Spara ändringar.
 - `config.json` ligger i den delade mappen, så alla användare har samma taggar. Exempelbilder och Inte rätt som någon lägger till förbättrar taggningen för alla.
 - Alla bilder och deras taggar, och Bilder utan AI-taggar: under varje bild står taggarna den får när man sparar. Ett klick på en tagg gör den röd med ett kryss, ett klick till tar bort den från bilden (`excluded`). Borttagna taggar står kvar överstrukna och går att ångra. I fältet under bilden skriver man in en tagg att lägga till: på en tagg med prompt hamnar bilden i `included`, på en tagg med exempelbilder blir bilden ett exempel, och finns ingen tagg med namnet skapas en med bilden som exempel. Bilder utan AI-taggar visar också de tre taggar bilden ligger närmast, som förslag.
-- Byter man namn på en tagg till ett namn som redan finns varnar fältet, och taggen visas med "hette …" i listan.
+- Byter man namn på en tagg till ett namn som redan finns varnar fältet, och taggen visas med "hette …" i listan. Liknar ett nytt namn en befintlig tagg visas den som förslag.
+- Andra ord för samma sak (`synonyms`) och Hör ihop med (`related`) ställs in för varje tagg. Skriver man in en tagg under en bild används taggen direkt om ordet finns i ordlistan ("turningtorso" blir Turning Torso), och liknar ordet en tagg frågar appen "Menade du …?".
+- Okända nyckelord: nyckelord i bildfilerna som inte finns i ordlistan, med antal bilder. Ett ord kopplas till en tagg (blir en synonym) eller döljs (`hiddenKeywords`).
+
+### Ordlistan och taggarna i galleriet
+
+Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-taggar (`src/catalog/vocabulary.ts`):
+
+- Ett nyckelord som är ett taggnamn eller en synonym visas som taggen, t.ex. "town hall" som rådhus. Jämförelsen bryr sig inte om versaler, mellanslag och bindestreck.
+- Övriga nyckelord visas som de är, utom de i `hiddenKeywords`.
+- Samma tagg visas en gång. Taggar som bara kommer från AI:n är streckade.
+- Taggar som hör ihop (`related`, även i flera led) läggs till, så att en bild med kafé också visas med restaurang.
+- Ett klick på en tagg visar alla bilder med den i galleriet. "Visa alla bilder" tar bort filtret.
+- Synonymer, grupper och dolda nyckelord påverkar inte vilka AI-taggar bilderna får, och ingår inte i fingeravtrycket i `aiTagging.config`.
 - Minst en tagg per bild: en bild som inte når någon gräns får ändå den tagg den ligger närmast.
 
 ```json
@@ -156,6 +169,8 @@ Taggarna ändras i appen under Admin, fliken AI-taggar. Filen går också att ä
 | `threshold` | Lägsta likhet för att bilden ska få taggen (skalärprodukt mellan normaliserade vektorer). Mot en prompt ligger likheten normalt mellan −0,1 och 0,15, och reglaget går från 0 till 0,15. Mot exempelbilder ligger den mellan 0,5 och 1, och reglaget går från 0,5 till 1. Högre värde ger färre men säkrare taggar. |
 | `examples` | Valfri. Id för bilder som visar motivet. Bilderna jämförs då med medelvärdet av exempelbildernas AI-vektorer i stället för med prompten. Har alla exempelbilder tagits bort används prompten med gränsen 0,05. |
 | `excluded` | Valfri. Id för bilder som inte ska ha taggen. De och bilder vars AI-vektor har minst likheten 0,95 med någon av dem får inte taggen, inte heller med `atLeastOneTag`. En bild står inte i både `examples` och `excluded`. |
+| `synonyms` | Valfri. Andra ord för samma sak: synonymer, engelska ord och felstavningar. Ett taggnamn går före en synonym till en annan tagg. |
+| `related` | Valfri. Namn på taggar som hör ihop med den här, t.ex. `["kafé"]` för restaurang. Det räcker att det står på en av taggarna. |
 | `included` | Valfri. Id för bilder som har fått taggen för hand. De och bilder som är nästan likadana (minst 0,95) får taggen oavsett värde. `excluded` går före `included` för samma bild, och en rättning av bilden själv går före en rättning av en liknande bild. |
 
 - En bild får alla taggar vars likhet är minst `threshold`, utom taggar där den är utesluten genom `excluded`. Bilder utan AI-vektor får inga AI-taggar.
