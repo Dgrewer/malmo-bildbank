@@ -34,11 +34,27 @@ async function load(key: string): Promise<FileSystemDirectoryHandle | null> {
   return handle instanceof FileSystemDirectoryHandle ? handle : null
 }
 
-async function save(key: string, handle: FileSystemDirectoryHandle): Promise<void> {
-  await run('readwrite', (store) => store.put(handle, key))
+async function save(key: string, value: unknown): Promise<void> {
+  await run('readwrite', (store) => store.put(value, key))
 }
 
 export const loadFolder = () => load(FOLDER_KEY)
 export const saveFolder = (handle: FileSystemDirectoryHandle) => save(FOLDER_KEY, handle)
-export const loadOriginalsFolder = () => load(ORIGINALS_KEY)
-export const saveOriginalsFolder = (handle: FileSystemDirectoryHandle) => save(ORIGINALS_KEY, handle)
+
+interface SavedOriginals {
+  bank: FileSystemDirectoryHandle
+  originals: FileSystemDirectoryHandle
+}
+
+// Originalmappen sparas ihop med bildbanken den valdes för. En originalmapp
+// som valdes för en annan bildbank följer inte med.
+export async function loadOriginalsFolder(bank: FileSystemDirectoryHandle): Promise<FileSystemDirectoryHandle | null> {
+  const saved = (await run('readonly', (store) => store.get(ORIGINALS_KEY))) as SavedOriginals | undefined
+  if (!(saved?.bank instanceof FileSystemDirectoryHandle) || !(saved.originals instanceof FileSystemDirectoryHandle)) {
+    return null
+  }
+  return (await saved.bank.isSameEntry(bank)) ? saved.originals : null
+}
+
+export const saveOriginalsFolder = (bank: FileSystemDirectoryHandle, originals: FileSystemDirectoryHandle) =>
+  save(ORIGINALS_KEY, { bank, originals } satisfies SavedOriginals)

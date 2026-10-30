@@ -116,7 +116,7 @@ Filen är binär. Alla tal är little-endian.
 
 ## Import
 
-Importen körs i appen, under Importera. Originalmappen väljs per dator, och kan ligga utanför bildbanken, t.ex. på G:. Varje mapp direkt under originalmappen är en fotograf, och under den kan bilder ligga i undermappar i flera nivåer. `path` räknas alltid från originalmappen och börjar med `original/`.
+Importen körs i appen, under Importera. Bilderna läses som standard från bildbankens egen `original/`. En mapp utanför bildbanken, t.ex. på G:, kan väljas i stället. Valet sparas per dator och per bildbank. Varje mapp direkt under originalmappen är en fotograf, och under den kan bilder ligga i undermappar i flera nivåer. `path` räknas alltid från originalmappen och börjar med `original/`.
 
 - Bilder känns igen på `hash`, så en flyttad eller omdöpt fil behåller sitt id. Finns inget fingeravtryck med samma värde matchas filen på `path`.
 - Nya bilder får `lastId + 1` och framåt. Befintliga id ändras aldrig.

@@ -467,3 +467,10 @@ button:disabled {
 .recovery ul {
   margin: 0.25rem 0 0;
 }
+
+.originals .outside {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+}

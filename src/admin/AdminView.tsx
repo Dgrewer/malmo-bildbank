@@ -73,16 +73,21 @@ export function AdminView({ bank, onClose }: Props) {
     if ((await handle.isSameEntry(bank)) || (await findDirectory(handle, 'app-data'))) {
       throw new Error(
         `”${handle.name}” är bildbankens mapp. Välj mappen som innehåller fotografernas mappar, ` +
-          'eller Använd bildbankens original.',
+          'eller välj Använd bildbankens egen mapp.',
       )
     }
     const bankOriginals = await findDirectory(bank, 'original')
     return { kind: 'ready', handle, inBank: !!bankOriginals && (await bankOriginals.isSameEntry(handle)) }
   }
 
+  // Utan ett eget val för den här bildbanken läses bilderna från dess egen original/.
   useEffect(() => {
-    loadOriginalsFolder().then(async (handle) => {
-      if (!handle) return
+    loadOriginalsFolder(bank).then(async (handle) => {
+      if (!handle) {
+        const own = await findDirectory(bank, 'original')
+        if (own) setOriginals({ kind: 'ready', handle: own, inBank: true })
+        return
+      }
       const permission = await handle.queryPermission({ mode: 'read' })
       setOriginals(permission === 'granted' ? await ready(handle) : { kind: 'reconnect', handle })
     }).catch((error) => setState({ kind: 'idle', error: errorText(error) }))
@@ -129,7 +134,7 @@ export function AdminView({ bank, onClose }: Props) {
     try {
       const handle = await window.showDirectoryPicker({ id: 'original', mode: 'read' })
       const chosen = await ready(handle)
-      await saveOriginalsFolder(handle)
+      await saveOriginalsFolder(bank, handle)
       setOriginals(chosen)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
@@ -147,8 +152,12 @@ export function AdminView({ bank, onClose }: Props) {
 
   async function useBankOriginals() {
     const handle = await findDirectory(bank, 'original')
-    if (handle) setOriginals({ kind: 'ready', handle, inBank: true })
-    else setState({ kind: 'idle', error: `Bildbankens mapp ”${bank.name}” saknar undermappen original.` })
+    if (!handle) {
+      setState({ kind: 'idle', error: `Bildbankens mapp ”${bank.name}” saknar undermappen original.` })
+      return
+    }
+    await saveOriginalsFolder(bank, handle)
+    setOriginals({ kind: 'ready', handle, inBank: true })
   }
 
   function scan() {
@@ -185,26 +194,40 @@ export function AdminView({ bank, onClose }: Props) {
             <strong>{bank.name}</strong>. Index, miniatyrer och förhandsbilder sparas i app-data.
           </p>
         </div>
-        <div>
-          <h3>Originalmapp</h3>
-          {originals.kind === 'ready' && (
+        <div className="originals">
+          <h3>Bilderna läses från</h3>
+          {originals.kind === 'ready' && originals.inBank && (
             <p>
-              <strong>{originals.inBank ? `${bank.name}/original` : originals.handle.name}</strong>. Varje mapp här
-              är en fotograf.
+              Bildbankens egen mapp <strong>{bank.name} › {originals.handle.name}</strong>. Varje undermapp är en
+              fotograf.
             </p>
           )}
-          {originals.kind === 'none' && <p>Välj mappen med fotografernas mappar, t.ex. på G: eller lokalt.</p>}
+          {originals.kind === 'ready' && !originals.inBank && (
+            <p className="outside">
+              En mapp <strong>utanför bildbanken</strong> som heter <strong>{originals.handle.name}</strong>. Varje
+              undermapp är en fotograf. Webbläsaren visar bara mappens namn, inte var den ligger.
+            </p>
+          )}
+          {originals.kind === 'reconnect' && (
+            <p className="outside">
+              En mapp <strong>utanför bildbanken</strong> som heter <strong>{originals.handle.name}</strong>. Webbläsaren
+              behöver ditt tillstånd för att läsa den igen.
+            </p>
+          )}
+          {originals.kind === 'none' && <p>Välj mappen med fotografernas mappar.</p>}
           <div className="actions">
             {originals.kind === 'reconnect' && (
-              <button type="button" className="primary" disabled={busy} onClick={() => reconnectOriginals(originals.handle)}>
+              <button type="button" disabled={busy} onClick={() => reconnectOriginals(originals.handle)}>
                 Återanslut {originals.handle.name}
               </button>
             )}
+            {!(originals.kind === 'ready' && originals.inBank) && (
+              <button type="button" className="primary" disabled={busy} onClick={useBankOriginals}>
+                Använd bildbankens egen mapp
+              </button>
+            )}
             <button type="button" disabled={busy} onClick={chooseOriginals}>
-              Välj originalmapp
-            </button>
-            <button type="button" disabled={busy} onClick={useBankOriginals}>
-              Använd bildbankens original
+              Välj en mapp utanför bildbanken
             </button>
           </div>
         </div>

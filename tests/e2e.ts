@@ -908,8 +908,9 @@ try {
     const page = importPage
     await waitForText(page, 'Hittar inte app-data/index.json', 600_000)
     await clickButton(page, 'Importera')
-    await clickButton(page, 'Använd bildbankens original')
-    await waitForText(page, `${bank}/original`)
+    // Bildbankens egen mapp väljs automatiskt.
+    await waitForText(page, `Bildbankens egen mapp ${bank} › Original`)
+    assert(!(await page.$('::-p-text(Använd bildbankens egen mapp)')), 'Knappen för bildbankens egen mapp visas fast den redan är vald')
     await clickButton(page, 'Sök efter ändringar')
     await waitForText(page, 'Räknar fingeravtryck')
     await clickButton(page, 'Avbryt')
@@ -1415,10 +1416,10 @@ try {
         return bank
       }
     })
-    await clickButton(page, 'Välj originalmapp')
+    await clickButton(page, 'Välj en mapp utanför bildbanken')
     await waitForText(page, '”kopiabank” är bildbankens mapp')
-    await clickButton(page, 'Välj originalmapp')
-    await waitForText(page, 'externa')
+    await clickButton(page, 'Välj en mapp utanför bildbanken')
+    await waitForText(page, 'En mapp utanför bildbanken som heter externa')
     await clickButton(page, 'Sök efter ändringar')
     const { counts } = await waitForPreview(page)
     assert(counts.new === 2, `Väntade 2 nya bilder: ${JSON.stringify(counts)}`)
@@ -1452,7 +1453,8 @@ try {
     }
 
     // Med bildbankens egen original/ som originalmapp finns inget att kopiera.
-    await clickButton(page, 'Använd bildbankens original')
+    await clickButton(page, 'Använd bildbankens egen mapp')
+    await waitForText(page, 'Bildbankens egen mapp kopiabank › Original')
     await clickButton(page, 'Sök efter ändringar')
     await waitForPreview(page)
     assert(!(await page.$(checkbox)), 'Kryssrutan visas fast originalmappen är bildbankens egen')
