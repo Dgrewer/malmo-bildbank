@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type WheelEvent } from 'react'
 import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
@@ -70,6 +70,16 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
     if (!dialog.current!.open) dialog.current!.showModal()
   }, [])
 
+  // Mushjulet över fotot bläddrar en bild per tag. En pekplatta skickar många
+  // små händelser, så efter ett byte väntar vi en kort stund.
+  const lastWheel = useRef(0)
+  function onWheel(event: WheelEvent) {
+    if (isEditing || Math.abs(event.deltaY) < 1 || event.timeStamp - lastWheel.current < 250) return
+    lastWheel.current = event.timeStamp
+    if (event.deltaY > 0 && hasNext) onNavigate(position + 1)
+    else if (event.deltaY < 0 && hasPrevious) onNavigate(position - 1)
+  }
+
   function onKeyDown(event: KeyboardEvent) {
     if (event.altKey || event.ctrlKey || event.metaKey || isEditing) return
     if (event.key === 'ArrowLeft' && hasPrevious) onNavigate(position - 1)
@@ -97,7 +107,13 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
       onKeyDown={onKeyDown}
       onClick={(event) => event.target === dialog.current && dialog.current.close()}
     >
-      <div className="detail-preview">
+      <div
+        className={isEditing ? 'detail-preview' : 'detail-preview closes'}
+        title={isEditing ? undefined : 'Klicka för att stänga. Bläddra med mushjulet.'}
+        // Ett klick på fotot stänger bilden, utom när man redigerar.
+        onClick={() => !isEditing && dialog.current!.close()}
+        onWheel={onWheel}
+      >
         {image.previewProblem ? (
           <div className="preview-problem">
             <span className="problem-icon" aria-hidden="true">

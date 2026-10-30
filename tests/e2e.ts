@@ -909,7 +909,18 @@ try {
     )
     await screenshot(page, '3.5-bläddra')
 
-    await page.keyboard.press('Escape')
+    // Mushjulet över fotot bläddrar, och ett klick på fotot stänger bilden.
+    const box = (await page.$eval('dialog.detail[open] .detail-preview', (element) => {
+      const rect = element.getBoundingClientRect()
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+    }))!
+    await page.mouse.move(box.x, box.y)
+    await page.mouse.wheel({ deltaY: -100 })
+    await page.waitForFunction((id) => document.querySelector('dialog.detail[open] h2')?.textContent === id, { timeout: 5_000 }, index.images[last - 1].id)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await page.mouse.wheel({ deltaY: 100 })
+    await page.waitForFunction((id) => document.querySelector('dialog.detail[open] h2')?.textContent === id, { timeout: 5_000 }, index.images[last].id)
+    await page.mouse.click(box.x, box.y)
     await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
     const state = await galleryState(page)
     assert(state.live === state.loaded, `Förhandsbilder frigjordes inte vid bläddring (${state.live} levande URL:er)`)
