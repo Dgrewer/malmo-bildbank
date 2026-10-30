@@ -3,15 +3,18 @@ import { AdminView } from './admin/AdminView.tsx'
 import { DEFAULT_CONFIG, parseConfig } from './ai/tagConfig.ts'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
-import { buildVocabulary, shownTags, wordKey, type ShownTag } from './catalog/vocabulary.ts'
+import { appendEdits, applyEdits, editedTags, loadEdits, mergeEdits, type Edit } from './catalog/edits.ts'
+import { buildVocabulary, shownTags, wordKey, type ShownTag, type Vocabulary } from './catalog/vocabulary.ts'
 import { ensureDirectory, readFile } from './fs/folder.ts'
 import { DetailView } from './detail/DetailView.tsx'
 import { Gallery } from './gallery/Gallery.tsx'
 
 interface Catalog {
-  images: ImageRecord[]
-  // Bildens taggar som de visas, efter id: nyckelord och AI-taggar via ordlistan.
-  tags: Map<string, ShownTag[]>
+  // Bilderna som de står i indexet, före användarnas ändringar.
+  indexed: ImageRecord[]
+  vocabulary: Vocabulary
+  // Alla användares ändringar i app-data/edits/.
+  edits: Edit[]
   thumbs: FileSystemDirectoryHandle
   previews: FileSystemDirectoryHandle
 }
@@ -39,10 +42,10 @@ async function loadCatalog(root: FileSystemDirectoryHandle): Promise<Catalog> {
       config = { ...DEFAULT_CONFIG, aiTags: [] }
     }
   }
-  const vocabulary = buildVocabulary(config)
   return {
-    images,
-    tags: new Map(images.map((image) => [image.id, shownTags(image, vocabulary)])),
+    indexed: images,
+    vocabulary: buildVocabulary(config),
+    edits: await loadEdits(root),
     thumbs: await ensureDirectory(root, 'app-data/thumbs'),
     previews: await ensureDirectory(root, 'app-data/previews'),
   }
@@ -76,14 +79,32 @@ export function Library({ root, onChangeFolder }: Props) {
   }, [root, version])
 
   const catalog = state.kind === 'ready' ? state.catalog : null
+  // Bilderna och deras taggar efter användarnas ändringar.
+  const edited = useMemo(() => {
+    if (!catalog) return null
+    const merged = mergeEdits(catalog.edits)
+    const images = catalog.indexed.map((image) => applyEdits(image, merged))
+    const tags = new Map<string, ShownTag[]>(
+      images.map((image) => [image.id, editedTags(shownTags(image, catalog.vocabulary), merged.tags.get(image.id))]),
+    )
+    return { images, tags }
+  }, [catalog])
   const shown = useMemo(() => {
-    if (!catalog || !filter) return catalog?.images ?? []
+    if (!edited || !filter) return edited?.images ?? []
     if (filter.kind === 'place') {
-      return catalog.images.filter((image) => image.place?.district === filter.value || image.place?.subdistrict === filter.value)
+      return edited.images.filter((image) => image.place?.district === filter.value || image.place?.subdistrict === filter.value)
     }
     const key = wordKey(filter.value)
-    return catalog.images.filter((image) => catalog.tags.get(image.id)!.some((other) => wordKey(other.tag) === key))
-  }, [catalog, filter])
+    return edited.images.filter((image) => edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key))
+  }, [edited, filter])
+
+  // Sparar ändringar i användarens egen fil och visar dem direkt.
+  async function saveEdits(user: string, edits: Edit[]) {
+    await appendEdits(root, user, edits)
+    setState((current) =>
+      current.kind === 'ready' ? { kind: 'ready', catalog: { ...current.catalog, edits: [...current.catalog.edits, ...edits] } } : current,
+    )
+  }
 
   function show(next: Filter) {
     setFilter(next)
@@ -96,7 +117,7 @@ export function Library({ root, onChangeFolder }: Props) {
         <h1>Malmö Bildbank</h1>
         <span className="folder-name">
           {root.name}
-          {catalog && ` · ${catalog.images.length.toLocaleString('sv-SE')} bilder`}
+          {catalog && ` · ${catalog.indexed.length.toLocaleString('sv-SE')} bilder`}
         </span>
         {!admin && (
           <button type="button" onClick={() => setAdmin(true)}>
@@ -138,7 +159,9 @@ export function Library({ root, onChangeFolder }: Props) {
       {catalog && selected !== null && shown[selected] && (
         <DetailView
           image={shown[selected]}
-          tags={catalog.tags.get(shown[selected].id)!}
+          tags={edited!.tags.get(shown[selected].id)!}
+          vocabulary={catalog.vocabulary}
+          onSave={saveEdits}
           position={selected}
           count={shown.length}
           previews={catalog.previews}

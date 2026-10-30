@@ -187,7 +187,25 @@ Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-tag
 
 `src/places/malmo-areas.json` följer med appen och används bara av importen. Den görs av `scripts/make-places.ts` från Malmö stads öppna data (CC0, https://opendata-api.malmo.se): Stadsområden (GeoJSON, WGS84) och Delområden (TopoJSON, WGS84). Namnen skrivs om från versaler, t.ex. "VÄSTRA HAMNEN" till "Västra Hamnen". Koordinaterna avrundas till ungefär en meter. Ändras områdena: hämta filerna igen, kör skriptet och importera, så räknas platsen om för alla bilder.
 
-Platsen kan inte ändras i appen än. Det kommer med ändringarna i `app-data/edits/`, se `docs/plan.md`. En ändring där ska gå före den uträknade platsen.
+Platsen kan ändras i detaljvyn. Ändringen sparas i `app-data/edits/` och går före den uträknade platsen.
+
+## Ändringar: app-data/edits/
+
+I detaljvyn finns **Redigera**. Där kan man ändra fotograf, byline, villkor, rättigheter till och med, samtycke, spärr, plats och taggar, men inte filnamn eller format. **Spara** skriver bara det som har ändrats.
+
+Varje användare skriver bara till sin egen fil, `app-data/edits/<namn>.jsonl`. Namnet frågas efter första gången och sparas i webbläsaren på den datorn. Tecken som inte får finnas i filnamn byts mot `-`. Filen har en ändring per rad, och nya rader läggs till sist:
+
+```json
+{"at":"2026-10-30T20:15:00.000Z","by":"Fredrik","id":"MB-000012","field":"byline","value":"Foto: Fredrik Johansson"}
+{"at":"2026-10-30T20:15:00.000Z","by":"Fredrik","id":"MB-000012","field":"place","value":{"district":"Norr","subdistrict":"Gamla Staden"}}
+{"at":"2026-10-30T20:15:00.000Z","by":"Fredrik","id":"MB-000012","tag":"butik","on":false}
+```
+
+- `field` är ett av `photographer`, `byline`, `terms`, `rightsUntil` (`"ÅÅÅÅ-MM-DD"` eller `null`), `consent`, `blocked` och `place` (som i indexet). `value` har samma typ som fältet i indexet.
+- En rad med `tag` lägger till (`"on": true`) eller tar bort (`"on": false`) en tagg på bilden. Det gäller bara den bilden. AI:n lär sig inte av det, eftersom de delade rättningarna görs i Admin, AI-taggar.
+- Appen läser alla filer i mappen och slår ihop dem. Den senaste ändringen (`at`) av samma fält eller tagg på samma bild gäller, oavsett vem som gjorde den. Rader som inte går att läsa hoppas över.
+- Importen ändrar aldrig filerna i `edits/`. Ändringarna läggs ovanpå indexet när bildbanken läses in, så de finns kvar efter en ny import.
+- Ändringar för en hel fotografmapp finns inte än, se `docs/plan.md`.
 
 ## Import
 

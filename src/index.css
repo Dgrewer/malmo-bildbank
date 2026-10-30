@@ -395,6 +395,67 @@ button.primary {
   overflow-wrap: anywhere;
 }
 
+/* Stäng och Redigera, Redigera under Stäng. */
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.edit-form label,
+.edit-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.edit-form input[type='text'],
+.edit-form input[type='date'],
+.edit-form textarea,
+.edit-form select {
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.edit-form .add-tag input {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.edit-form label.edit-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.edit-tags .image-tag-chips {
+  color: var(--text);
+}
+
+.chip.ai {
+  border-style: dashed;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .detail-fields .expired {
   color: var(--error-text);
   font-weight: 600;

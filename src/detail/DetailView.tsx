@@ -1,8 +1,10 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
-import type { ShownTag } from '../catalog/vocabulary.ts'
+import type { Edit } from '../catalog/edits.ts'
+import type { ShownTag, Vocabulary } from '../catalog/vocabulary.ts'
+import { EditForm } from './EditForm.tsx'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 interface Props {
@@ -18,6 +20,9 @@ interface Props {
   onTag: (tag: string) => void
   // Visar alla bilder från stadsområdet eller delområdet i galleriet.
   onPlace: (place: string) => void
+  vocabulary: Vocabulary
+  // Sparar ändringar i användarens egen fil i app-data/edits/.
+  onSave: (user: string, edits: Edit[]) => Promise<void>
   onClose: () => void
 }
 
@@ -43,7 +48,10 @@ function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => vo
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
-export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, onClose }: Props) {
+export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, vocabulary, onSave, onClose }: Props) {
+  // Bilden som redigeras, eller null. Byts bilden avslutas redigeringen.
+  const [editing, setEditing] = useState<string | null>(null)
+  const isEditing = editing === image.id
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
   const expired = rightsExpired(image)
@@ -55,7 +63,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
   }, [])
 
   function onKeyDown(event: KeyboardEvent) {
-    if (event.altKey || event.ctrlKey || event.metaKey) return
+    if (event.altKey || event.ctrlKey || event.metaKey || isEditing) return
     if (event.key === 'ArrowLeft' && hasPrevious) onNavigate(position - 1)
     else if (event.key === 'ArrowRight' && hasNext) onNavigate(position + 1)
     else return
@@ -68,6 +76,13 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
       className={image.blocked ? 'detail is-blocked' : 'detail'}
       aria-labelledby="detail-title"
       onClose={onClose}
+      onCancel={(event) => {
+        // Esc avbryter redigeringen i stället för att stänga bilden.
+        if (isEditing) {
+          event.preventDefault()
+          setEditing(null)
+        }
+      }}
       onKeyDown={onKeyDown}
       onClick={(event) => event.target === dialog.current && dialog.current.close()}
     >
@@ -89,16 +104,23 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
       <div className="detail-info">
         <div className="detail-header">
           <h2 id="detail-title">{image.id}</h2>
-          <button type="button" onClick={() => dialog.current!.close()}>
-            Stäng
-          </button>
+          <div className="detail-actions">
+            <button type="button" onClick={() => dialog.current!.close()}>
+              Stäng
+            </button>
+            {!isEditing && (
+              <button type="button" onClick={() => setEditing(image.id)}>
+                Redigera
+              </button>
+            )}
+          </div>
         </div>
         <div className="detail-nav">
           <button
             type="button"
             aria-label="Föregående bild"
             title="Föregående bild (vänsterpil)"
-            disabled={!hasPrevious}
+            disabled={!hasPrevious || isEditing}
             onClick={() => onNavigate(position - 1)}
           >
             ‹
@@ -110,7 +132,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             type="button"
             aria-label="Nästa bild"
             title="Nästa bild (högerpil)"
-            disabled={!hasNext}
+            disabled={!hasNext || isEditing}
             onClick={() => onNavigate(position + 1)}
           >
             ›
@@ -146,72 +168,82 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </p>
         )}
 
-        <dl className="detail-fields">
-          <dt>Original</dt>
-          <dd>
-            <span className="file-format">{fileFormat(image.path)}</span> {fileName(image.path)}
-          </dd>
-          {image.durationSeconds !== null && (
-            <>
-              <dt>Längd</dt>
-              <dd>{formatDuration(image.durationSeconds)}</dd>
-            </>
-          )}
-          {image.alternates.length > 0 && (
-            <>
-              <dt>Även som</dt>
-              {image.alternates.map((alternate) => (
-                <dd key={alternate}>
-                  <span className="file-format">{fileFormat(alternate)}</span> {fileName(alternate)}
-                </dd>
-              ))}
-            </>
-          )}
-          <dt>Fotograf</dt>
-          <dd>{image.photographer}</dd>
-          <dt>Byline</dt>
-          <dd>{image.byline}</dd>
-          <dt>Villkor</dt>
-          <dd>{image.terms || 'Inga villkor angivna'}</dd>
-          <dt>Rättigheter till och med</dt>
-          <dd className={expired ? 'expired' : undefined}>
-            {image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'}
-          </dd>
-          <dt>Samtycke</dt>
-          <dd>{CONSENT_TEXT[image.consent]}</dd>
-          <dt>Plats</dt>
-          <dd className="detail-place">
-            {image.place ? (
-              <ul className="tag-list">
-                {[image.place.subdistrict, image.place.district].filter((name) => name !== null).map((name) => (
-                  <li key={name}>
-                    <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
-                      {name}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : image.gps ? (
-              'Utanför Malmö'
-            ) : (
-              'Okänd, bilden saknar GPS-position'
-            )}
-          </dd>
-          <dt>Taggar</dt>
-          <dd className="detail-tags">
-            {tags.length ? (
+        {isEditing ? (
+          <EditForm
+            image={image}
+            tags={tags}
+            vocabulary={vocabulary}
+            onSave={onSave}
+            onDone={() => setEditing(null)}
+          />
+        ) : (
+          <dl className="detail-fields">
+            <dt>Original</dt>
+            <dd>
+              <span className="file-format">{fileFormat(image.path)}</span> {fileName(image.path)}
+            </dd>
+            {image.durationSeconds !== null && (
               <>
-                <TagList tags={tags} onTag={onTag} />
-                <span className="tags-note">
-                  Klicka på en tagg för att se alla bilder med den.
-                  {tags.some((tag) => tag.ai) && ' Streckade taggar har AI:n satt, och de kan vara fel.'}
-                </span>
+                <dt>Längd</dt>
+                <dd>{formatDuration(image.durationSeconds)}</dd>
               </>
-            ) : (
-              'Inga taggar'
             )}
-          </dd>
-        </dl>
+            {image.alternates.length > 0 && (
+              <>
+                <dt>Även som</dt>
+                {image.alternates.map((alternate) => (
+                  <dd key={alternate}>
+                    <span className="file-format">{fileFormat(alternate)}</span> {fileName(alternate)}
+                  </dd>
+                ))}
+              </>
+            )}
+            <dt>Fotograf</dt>
+            <dd>{image.photographer}</dd>
+            <dt>Byline</dt>
+            <dd>{image.byline}</dd>
+            <dt>Villkor</dt>
+            <dd>{image.terms || 'Inga villkor angivna'}</dd>
+            <dt>Rättigheter till och med</dt>
+            <dd className={expired ? 'expired' : undefined}>
+              {image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'}
+            </dd>
+            <dt>Samtycke</dt>
+            <dd>{CONSENT_TEXT[image.consent]}</dd>
+            <dt>Plats</dt>
+            <dd className="detail-place">
+              {image.place ? (
+                <ul className="tag-list">
+                  {[image.place.subdistrict, image.place.district].filter((name) => name !== null).map((name) => (
+                    <li key={name}>
+                      <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
+                        {name}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : image.gps ? (
+                'Utanför Malmö'
+              ) : (
+                'Okänd, bilden saknar GPS-position'
+              )}
+            </dd>
+            <dt>Taggar</dt>
+            <dd className="detail-tags">
+              {tags.length ? (
+                <>
+                  <TagList tags={tags} onTag={onTag} />
+                  <span className="tags-note">
+                    Klicka på en tagg för att se alla bilder med den.
+                    {tags.some((tag) => tag.ai) && ' Streckade taggar har AI:n satt, och de kan vara fel.'}
+                  </span>
+                </>
+              ) : (
+                'Inga taggar'
+              )}
+            </dd>
+          </dl>
+        )}
       </div>
     </dialog>
   )

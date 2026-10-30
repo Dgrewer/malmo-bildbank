@@ -4,6 +4,7 @@
 // Filerna hämtas från https://opendata-api.malmo.se, datamängderna
 // "Stadsområden" (GeoJSON 4326) och "Delområden" (TopoJSON 4326).
 import fs from 'node:fs'
+import { placeAt } from '../src/catalog/places.ts'
 
 type Ring = number[][]
 interface Area {
@@ -11,6 +12,8 @@ interface Area {
   code: string
   // Alla ringar i området, även hål, som [lon, lat, lon, lat, …].
   rings: number[][]
+  // För ett delområde: stadsområdet det ligger i.
+  district?: string
 }
 
 // "VÄSTRA HAMNEN" -> "Västra Hamnen"
@@ -76,6 +79,19 @@ const subdistricts: Area[] = collection.geometries.map((geometry) => ({
     (indexes) => flat(ring(indexes)),
   ),
 }))
+
+// Stadsområdet som ett delområde ligger i: det som de flesta av dess hörn ligger i.
+for (const subdistrict of subdistricts) {
+  const votes = new Map<string, number>()
+  for (const ring of subdistrict.rings) {
+    for (let i = 0; i < ring.length; i += 2) {
+      const district = placeAt({ longitude: ring[i], latitude: ring[i + 1] }, { districts, subdistricts: [] })?.district
+      if (district) votes.set(district, (votes.get(district) ?? 0) + 1)
+    }
+  }
+  subdistrict.district = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+  if (!subdistrict.district) console.warn(`${subdistrict.name} ligger inte i något stadsområde`)
+}
 
 const out = {
   source: 'Malmö stad, öppna data (CC0): Stadsområden och Delområden, https://opendata-api.malmo.se',

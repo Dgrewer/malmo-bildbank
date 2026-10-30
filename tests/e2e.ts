@@ -142,6 +142,13 @@ async function screenshot(page: Page, name: string) {
   await page.screenshot({ path: path.join(process.env.SCREENSHOTS, `${name}.png`) })
 }
 
+// Skärmbild av bara ett element, t.ex. formuläret utan fotot.
+async function elementScreenshot(page: Page, selector: string, name: string) {
+  if (!process.env.SCREENSHOTS) return
+  await fs.mkdir(process.env.SCREENSHOTS, { recursive: true })
+  await (await page.$(selector))!.screenshot({ path: path.join(process.env.SCREENSHOTS, `${name}.png`) })
+}
+
 // Lägger till vilket steg som misslyckades i felet.
 async function step<T>(label: string, promise: Promise<T>): Promise<T> {
   try {
@@ -1250,6 +1257,76 @@ try {
       const fromThere = index.images.filter((image) => image.place?.subdistrict === subdistrict).length
       await waitForText(viewer, `Bilder från ${subdistrict} · ${fromThere.toLocaleString('sv-SE')} ${fromThere === 1 ? 'bild' : 'bilder'}`)
       await clickButton(viewer, 'Visa alla bilder')
+
+      // Redigera: ändringarna sparas i användarens egen fil och visas direkt.
+      const edited = index.images[0]
+      // Testprofilen sparar namnet mellan körningar. Börja utan namn.
+      await viewer.evaluate(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const open = indexedDB.open('malmo-bildbank', 1)
+            open.onupgradeneeded = () => open.result.createObjectStore('settings')
+            open.onerror = () => reject(open.error)
+            open.onsuccess = () => {
+              const transaction = open.result.transaction('settings', 'readwrite')
+              transaction.objectStore('settings').delete('user')
+              transaction.oncomplete = () => (open.result.close(), resolve())
+              transaction.onerror = () => reject(transaction.error)
+            }
+          }),
+      )
+      const [removedTag] = await (async () => {
+        await viewer.locator('.gallery-cell[data-index="0"]').click()
+        await step('Redigera', clickButton(viewer, 'Redigera'))
+        await viewer.waitForSelector('.edit-form .image-tag-chips .chip', { timeout: 10_000 })
+        return viewer.$$eval('.edit-form .image-tag-chips .chip', (chips) => chips.map((chip) => chip.getAttribute('data-tag')!))
+      })()
+      await step('Namnfältet', viewer.waitForSelector('.edit-form label:has(> small) input', { timeout: 5_000 }))
+      await viewer.type('.edit-form label:has(> small) input', 'Testare')
+      const byline = viewer.locator('.edit-form label::-p-text(Byline) input')
+      await byline.fill('Foto: Ändrad i test')
+      await viewer.select('.edit-form label::-p-text(Samtycke) select', 'missing')
+      const chip = `.edit-form .chip[data-tag="${removedTag}"]`
+      await viewer.click(chip)
+      await viewer.waitForSelector(`${chip}.armed`, { timeout: 5_000 })
+      await viewer.click(chip)
+      await viewer.waitForSelector(`${chip}.removed`, { timeout: 5_000 })
+      await viewer.type('.edit-form .add-tag input', 'testtagg')
+      await viewer.keyboard.press('Enter')
+      await step('Ny tagg i formuläret', viewer.waitForSelector('.edit-form .chip[data-tag="testtagg"]', { timeout: 5_000 }))
+      await viewer.waitForSelector('.edit-form label::-p-text(Plats) select optgroup option', { timeout: 10_000 })
+      const placeOption = await viewer.$eval('.edit-form label::-p-text(Plats) select optgroup option', (option) => (option as HTMLOptionElement).value)
+      await viewer.select('.edit-form label::-p-text(Plats) select', placeOption)
+      await elementScreenshot(viewer, 'dialog.detail[open] .detail-info', '4.8-redigera')
+      await clickButton(viewer, 'Spara')
+      await step('Sparat', viewer.waitForSelector('dialog.detail[open] .detail-fields', { timeout: 10_000 }))
+      const fields = await viewer.$eval('dialog.detail[open] .detail-fields', (element) => (element as HTMLElement).innerText)
+      const shownTags = await viewer.$$eval('dialog.detail[open] .detail-tags button', (buttons) => buttons.map((button) => button.textContent))
+      const [district, sub] = JSON.parse(placeOption) as [string, string]
+      assert(
+        fields.includes('Foto: Ändrad i test') && shownTags.includes('testtagg') && !shownTags.includes(removedTag) && fields.includes(sub),
+        `Detaljvyn efter Spara: ${fields}`,
+      )
+      const file = (await readOpfs(viewer, `${bank}/app-data/edits/Testare.jsonl`))!
+      const lines = file.trim().split('\n').map((line) => JSON.parse(line))
+      const field = (name: string) => lines.find((line) => line.field === name)?.value
+      assert(
+        lines.every((line) => line.id === edited.id && line.by === 'Testare') &&
+          field('byline') === 'Foto: Ändrad i test' &&
+          field('consent') === 'missing' &&
+          JSON.stringify(field('place')) === JSON.stringify({ district, subdistrict: sub }) &&
+          lines.some((line) => line.tag === removedTag && line.on === false) &&
+          lines.some((line) => line.tag === 'testtagg' && line.on === true) &&
+          !lines.some((line) => line.field === 'terms'),
+        `Testare.jsonl: ${file}`,
+      )
+      // Efter omladdning läses ändringarna från filen.
+      await viewer.reload()
+      await viewer.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await viewer.locator('.gallery-cell[data-index="0"]').click()
+      await step('Ändringen finns kvar', waitForText(viewer, 'Foto: Ändrad i test'))
+      await clickButton(viewer, 'Redigera')
+      assert(!(await viewer.$('.edit-form label:has(> small)')), 'Namnet efterfrågas igen')
     } finally {
       await viewer.close()
     }

@@ -12,6 +12,6 @@ Det som återstår, i ordning. Bocka av när ett steg är klart och pushat.
 
 ## Senare
 
-- [ ] Ändringar per användare i `app-data/edits/<namn>.jsonl` (se CLAUDE.md): rättigheter per fotografmapp och foto, och platsen. En ändring går före det som importen har räknat ut, och den senaste ändringen gäller.
-- [ ] Ändra platsen i detaljvyn, med hjälp av ändringarna ovan.
+- [x] Ändringar per användare i `app-data/edits/<namn>.jsonl` (se CLAUDE.md), och Redigera i detaljvyn: fält, plats och taggar per foto.
+- [ ] Rättigheter för en hel fotografmapp (`original/<fotograf>/`). Fotots inställning går före mappens.
 - [ ] Karta över Malmö: områden och platser med bilder. Ett klick visar bilderna som är tagna där, ner till gatunivå.

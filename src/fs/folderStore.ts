@@ -38,6 +38,16 @@ async function save(key: string, value: unknown): Promise<void> {
   await run('readwrite', (store) => store.put(value, key))
 }
 
+// Namnet som användarens ändringar sparas under, app-data/edits/<namn>.jsonl.
+const USER_KEY = 'user'
+
+export async function loadUserName(): Promise<string> {
+  const name = await run('readonly', (store) => store.get(USER_KEY))
+  return typeof name === 'string' ? name : ''
+}
+
+export const saveUserName = (name: string) => save(USER_KEY, name)
+
 export const loadFolder = () => load(FOLDER_KEY)
 export const saveFolder = (handle: FileSystemDirectoryHandle) => save(FOLDER_KEY, handle)
 

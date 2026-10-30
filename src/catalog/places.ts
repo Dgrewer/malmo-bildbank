@@ -17,6 +17,8 @@ interface Area {
   name: string
   code: string
   rings: number[][]
+  // För ett delområde: stadsområdet det ligger i.
+  district?: string
 }
 
 export interface Areas {
