@@ -305,6 +305,35 @@ button.primary {
   font-size: 0.9rem;
 }
 
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-list li {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.85rem;
+}
+
+.ai-tags .tag-list li {
+  border-style: dashed;
+  background: transparent;
+}
+
+.ai-tags-note {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .detail-header h2 {
   font-size: 1.1rem;
   margin: 0;

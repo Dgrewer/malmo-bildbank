@@ -7,6 +7,8 @@ app-data/
   index.json
   index.prev.json            föregående version, sparas vid varje import
   embeddings.bin             AI-vektorer för AI-sök, se nedan
+  config.json                AI-taggarna, se nedan
+  ai-taggar.bin              taggarnas textvektorer, samma format som embeddings.bin
   import/pagaende.jsonl      pågående import, finns bara medan en import pågår eller är avbruten
   import/pagaende.bin        AI-vektorer i en pågående import, samma format som embeddings.bin
   models/<modell>/           AI-modellen, laddas ner med npm run download-model
@@ -35,6 +37,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `images` | lista | En post per bild, sorterad efter id. |
 | `duplicates` | lista | Filer som importen har valt bort som dubbletter, se Import. Varje post har `path`, `hash` och `keptId`, id:t för bilden som behölls. Saknas i äldre index. |
 | `embeddings` | objekt | AI-vektorerna i `embeddings.bin`: `file` (`"embeddings.bin"`), `model` (modellens mapp i `app-data/models/`), `dimensions` och `count`. Saknas om ingen bild har en vektor. |
+| `aiTagging` | objekt | Hur bildernas `aiTags` sattes: `model` och `config`, ett fingeravtryck av taggarna i `config.json`. Saknas om inga AI-taggar har satts. |
 
 ## En post
 
@@ -52,6 +55,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
   "height": 2401,
   "takenAt": "2012-04-26T17:19:36",
   "tags": ["CML", "Hongkong", "Stadsvandring"],
+  "aiTags": ["gata", "torg"],
   "description": "En delegation från Hong Kong gick igår stadsvandring i Malmö",
   "alternates": [],
   "durationSeconds": null,
@@ -75,6 +79,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `width`, `height` | heltal | Originalets storlek i pixlar, efter EXIF-rotation. |
 | `takenAt` | sträng eller `null` | När bilden togs, `ÅÅÅÅ-MM-DDTtt:mm:ss` i lokal tid utan tidszon, eftersom EXIF saknar tidszon. `null` om uppgiften saknas. |
 | `tags` | lista med strängar | Nyckelord. Inga dubbletter. |
+| `aiTags` | lista med strängar | Taggar som AI-modellen har satt, se AI-taggar. Hålls skilda från `tags` eftersom de kan vara fel. Tom för bilder utan AI-vektor. Appen läser äldre index utan fältet som en tom lista. |
 | `description` | sträng | Bildtext. Tom sträng om den saknas. Radbrytningar är `\n`. |
 | `alternates` | lista med strängar | Andra filer av samma bild, med samma sökvägsregler som `path`. Används när en RAW-fil har en JPG med samma namn: `path` är RAW-filen och JPG:en ligger här. Oftast tom. Appen läser äldre index utan fältet som en tom lista. |
 | `durationSeconds` | tal eller `null` | Längd i sekunder för video, `null` för bilder. För video är `width` och `height` filmens bildstorlek och `takenAt` inspelningstiden. Appen läser äldre index utan fältet som `null`. |
@@ -114,6 +119,32 @@ Filen är binär. Alla tal är little-endian.
 - Bildmodellen, `onnx/vision_model_fp16.onnx` (186 MB), är 16-bitars och används bara vid import. Den körs på grafikkortet (WebGPU), cirka 0,2 sekunder per bild. Utan användbart grafikkort körs den med WebAssembly, cirka 3 sekunder per bild.
 - Appen läser modellfilerna ur bildbankens mapp. Transformers.js får inte hämta något från internet, och ONNX Runtimes WebAssembly-filer följer med appen.
 
+## AI-taggar: app-data/config.json
+
+Importen sätter AI-taggar på bilderna utifrån taggarna i `config.json`. Saknas filen skapar importen den med de förvalda taggarna (`src/ai/defaultConfig.json`, cirka 240 taggar). Filen kan sedan ändras för hand.
+
+```json
+{
+  "version": 1,
+  "aiTags": [
+    { "tag": "cykel", "prompt": "a photo of a bicycle", "threshold": 0.06 }
+  ]
+}
+```
+
+| Fält | Beskrivning |
+|---|---|
+| `tag` | Taggen som den visas i appen, på svenska. |
+| `prompt` | Det textmodellen jämför bilden med, på engelska, eftersom modellen förstår engelska bäst. |
+| `threshold` | Lägsta likhet mellan bildens och promptens AI-vektorer (skalärprodukt, normalt mellan −0,1 och 0,15) för att bilden ska få taggen. Högre värde ger färre men säkrare taggar. |
+
+- En bild får alla taggar vars likhet är minst `threshold`. Bilder utan AI-vektor får inga AI-taggar.
+- Taggar som saknar något fält, eller som redan finns tidigare i listan, används inte. Importen säger hur många det var.
+- Taggarnas textvektorer sparas i `ai-taggar.bin`, rad 1 för första taggen osv. De gäller så länge `aiTagging.config` i indexet stämmer med taggarna, så att nya bilder kan taggas utan att textmodellen körs.
+- Ändras taggarna sätts AI-taggarna om för alla bilder vid nästa import. Textmodellen räknar då om taggarnas vektorer, vilket tar runt en halv minut, men bildernas AI-vektorer räknas inte om. Förhandsvisningen säger när det kommer att ske.
+- Förvalda tröskelvärden: 0,06, och högre för allmänna taggar som "himmel" och "hamn" som annars hamnar på många bilder. De är kalibrerade mot testbilderna och kan behöva justeras för den riktiga bildbanken.
+- De förvalda taggarna beskriver motiv, platser, miljöer, aktiviteter, årstider och bildtyper. Det finns inga taggar för etnicitet, religion, hälsa, funktionsnedsättning, kön eller andra känsliga egenskaper hos personer. Lägg inte till sådana.
+
 ## Import
 
 Importen körs i appen, under Importera. Bilderna läses som standard från bildbankens egen `original/`. En mapp utanför bildbanken, t.ex. på G:, kan väljas i stället. Valet sparas per dator och per bildbank. Varje mapp direkt under originalmappen är en fotograf, och under den kan bilder ligga i undermappar i flera nivåer. `path` räknas alltid från originalmappen och börjar med `original/`.
@@ -134,7 +165,8 @@ Importen körs i appen, under Importera. Bilderna läses som standard från bild
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.
 - Indexet skrivs först till `index.tmp.json`. Sedan sparas den nuvarande filen som `index.prev.json`, och den nya filen byter namn till `index.json`. För att gå tillbaka en version: byt namn på `index.prev.json` till `index.json`.
 - AI-vektorer räknas ut för nya och ändrade bilder, och för bilder som saknar en vektor. Saknas modellen görs importen utan AI-vektorer, och förhandsvisningen säger det.
-- Ordningen är alltid: miniatyrer och förhandsbilder först, sedan AI-vektorerna, sedan indexet, sist borttagning av bildfiler som det nya indexet inte längre pekar på. Ett index pekar därför aldrig på bildfiler som saknas, även om importen avbryts.
+- AI-taggar sätts när nya AI-vektorer har räknats ut eller taggarna i `config.json` har ändrats, se AI-taggar. En ändrad fil får nya AI-taggar, en flyttad behåller sina. Saknas modellen behåller bilderna sina AI-taggar.
+- Ordningen är alltid: miniatyrer och förhandsbilder först, sedan AI-vektorerna och AI-taggarna, sedan indexet, sist borttagning av bildfiler som det nya indexet inte längre pekar på. Ett index pekar därför aldrig på bildfiler som saknas, även om importen avbryts.
 - `index.prev.json` skrivs bara över med ett giltigt index, aldrig med en tom eller trasig fil.
 - När en import startar städas det som en avbruten import har lämnat kvar, och det som gjordes visas i förhandsvisningen:
   - `index.tmp.json` tas bort. Är `index.json` trasig men `index.tmp.json` hel används den i stället, och annars `index.prev.json`.

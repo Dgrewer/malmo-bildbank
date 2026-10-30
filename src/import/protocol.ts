@@ -8,7 +8,7 @@ export type ToWorker =
   // Svar på frame-request: en stillbild ur filmen, eller null om den inte gick att läsa.
   | { type: 'frame'; requestId: number; bitmap: ImageBitmap | null }
 
-export type Phase = 'scan' | 'hash' | 'import' | 'ai' | 'copy' | 'save'
+export type Phase = 'scan' | 'hash' | 'import' | 'ai' | 'tags' | 'copy' | 'save'
 
 export interface ScanSummary {
   new: string[]
@@ -28,7 +28,8 @@ export interface ScanSummary {
   // Vad som städades upp eller ska göras om efter en tidigare import som avbröts.
   recovery: string[]
   // model: finns AI-modellen i app-data/models/. missing: bilder som behöver en AI-vektor.
-  ai: { model: boolean; missing: number }
+  // retag: AI-taggarna sätts om för alla bilder, t.ex. för att taggarna i config.json har ändrats.
+  ai: { model: boolean; missing: number; retag: boolean }
 }
 
 export interface ImportResult {
@@ -42,6 +43,11 @@ export interface ImportResult {
   // computed: nya AI-vektorer. total: bilder med vektor. problem: varför vektorer saknas.
   // device: webgpu (grafikkortet) eller wasm, null om inga vektorer räknades ut.
   ai: { model: boolean; computed: number; total: number; problem: string | null; device: 'webgpu' | 'wasm' | null }
+  // AI-taggarna. tagged: bilder med minst en AI-tagg. retagged: taggarna sattes
+  // om nu. tags: taggar i config.json, skipped: ofullständiga taggar där.
+  // created: config.json skapades nu med de förvalda taggarna. problem: varför
+  // taggarna inte kunde sättas.
+  tags: { tagged: number; retagged: boolean; tags: number; skipped: number; created: boolean; problem: string | null }
 }
 
 export type FromWorker =

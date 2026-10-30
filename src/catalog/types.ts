@@ -14,6 +14,15 @@ export interface IndexFile {
   duplicates?: IndexDuplicate[]
   // AI-vektorerna i app-data/embeddings.bin. Saknas om ingen bild har en vektor.
   embeddings?: IndexEmbeddings
+  // Hur bildernas aiTags sattes. Saknas om inga AI-taggar har satts.
+  aiTagging?: IndexAiTagging
+}
+
+export interface IndexAiTagging {
+  model: string
+  // Fingeravtryck av taggarna i app-data/config.json (src/ai/tagConfig.ts).
+  // Ändras taggarna sätts AI-taggarna om för alla bilder.
+  config: string
 }
 
 export interface IndexEmbeddings {
@@ -48,6 +57,8 @@ export interface ImageRecord {
   height: number
   takenAt: string | null
   tags: string[]
+  // Taggar som AI-modellen har satt, skilda från tags. Kan vara fel.
+  aiTags: string[]
   description: string
   alternates: string[]
   durationSeconds: number | null

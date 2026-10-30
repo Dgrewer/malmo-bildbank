@@ -267,7 +267,7 @@ async function expectedImport(root: string) {
 async function testRecord(id: string, file: string, photographer: string): Promise<ImageRecord> {
   return {
     id, path: file, photographer, byline: '', terms: '', rightsUntil: null, consent: 'not-required', blocked: false,
-    width: 0, height: 0, takenAt: null, tags: [], description: '', alternates: [], durationSeconds: null,
+    width: 0, height: 0, takenAt: null, tags: [], aiTags: [], description: '', alternates: [], durationSeconds: null,
     previewProblem: null, hash: null, fileSize: null, fileModified: null,
   }
 }
@@ -485,7 +485,23 @@ async function opfs(page: Page, bank: string, file: string, operation: OpfsOpera
 const opfsDelete = (page: Page, bank: string, file: string) => opfs(page, bank, file, 'delete')
 const opfsAppend = (page: Page, bank: string, file: string, text: string) => opfs(page, bank, file, 'append', text)
 
-// Kopierar en fil. Med extra läggs text till på slutet, så att innehållet blir ett annat.
+// Skriver en textfil i OPFS, t.ex. "importtest/app-data/config.json".
+async function writeOpfs(page: Page, path: string, text: string) {
+  await page.evaluate(
+    async (path, text) => {
+      const parts = path.split('/')
+      const name = parts.pop()!
+      let directory = await navigator.storage.getDirectory()
+      for (const part of parts) directory = await directory.getDirectoryHandle(part, { create: true })
+      const writable = await (await directory.getFileHandle(name, { create: true })).createWritable()
+      await writable.write(text)
+      await writable.close()
+    },
+    path,
+    text,
+  )
+}
+
 // Läser en fil i OPFS som bytes, t.ex. "importtest/app-data/embeddings.bin".
 async function readOpfsBytes(page: Page, path: string): Promise<Buffer | null> {
   const base64 = await page.evaluate(async (path) => {
@@ -509,6 +525,7 @@ function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
 }
 
+// Kopierar en fil. Med extra läggs text till på slutet, så att innehållet blir ett annat.
 async function opfsCopy(page: Page, bank: string, from: string, to: string, extra = '') {
   await opfs(page, bank, to, 'write', (await opfs(page, bank, from, 'read')) as string, extra)
 }
@@ -661,6 +678,7 @@ try {
     height: width,
     takenAt,
     tags: [],
+    aiTags: [],
     description: '',
     alternates: [],
     durationSeconds: null,
@@ -1106,6 +1124,84 @@ try {
     const stored = vectors.get(firstId)!
     const same = result.again.reduce((sum, value, i) => sum + value * stored[i], 0)
     assert(same > 0.999, `Vektorn för ${firstId} blir inte densamma igen (${same})`)
+  })
+
+  await test('4.5 AI-taggar sätts från config.json, skilda från nyckelorden', async () => {
+    const page = importPage!
+    const defaults = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8')) as {
+      aiTags: { tag: string; prompt: string; threshold: number }[]
+    }
+    const names = defaults.aiTags.map((tag) => tag.tag)
+    assert(names.length >= 150 && new Set(names).size === names.length, `${names.length} förvalda taggar, eller dubbletter`)
+    assert(
+      defaults.aiTags.every((tag) => tag.prompt && typeof tag.threshold === 'number'),
+      'En förvald tagg saknar prompt eller tröskelvärde',
+    )
+    // Inga taggar för känsliga egenskaper hos personer.
+    const sensitive = /etni|hudfärg|religi|muslim|kristen|jud|kyrka|moské|sjuk|hälsa|funktionsned|rullstol|gravid|kvinna|\bman\b|sexuell|politi|demonstr/i
+    const found = names.filter((name) => sensitive.test(name))
+    assert(!found.length, `Känsliga förvalda taggar: ${found.join(', ')}`)
+
+    // Första importen skapade config.json med de förvalda taggarna och satte AI-taggar.
+    const config = JSON.parse((await readOpfs(page, `${bank}/app-data/config.json`))!)
+    assert(JSON.stringify(config) === JSON.stringify(defaults), 'config.json är inte de förvalda taggarna')
+    assert(firstIndex!.aiTagging?.model === MODEL.name, `aiTagging saknas: ${JSON.stringify(firstIndex!.aiTagging)}`)
+    const known = new Set(names)
+    for (const image of firstIndex!.images) {
+      assert(Array.isArray(image.aiTags), `${image.id} saknar aiTags`)
+      assert(image.aiTags.every((tag) => known.has(tag)), `${image.id} har okända AI-taggar: ${image.aiTags}`)
+      if (image.previewProblem) assert(!image.aiTags.length, `${image.id} saknar förhandsbild men har AI-taggar`)
+      assert(!image.aiTags.some((tag) => image.tags.includes(tag) && !known.has(tag)), 'AI-taggar blandas med nyckelord')
+    }
+    const tagged = firstIndex!.images.filter((image) => image.aiTags.length).length
+    assert(tagged > 0, 'Ingen bild fick AI-taggar')
+
+    // Ändrade taggar sätts om för alla bilder, utan att vektorerna räknas om.
+    // Tröskeln -1 ger alla bilder taggen och 2 ingen. Den ofullständiga taggen hoppas över.
+    const changed = {
+      version: 1,
+      aiTags: [
+        { tag: 'alla', prompt: 'a photo', threshold: -1 },
+        { tag: 'ingen', prompt: 'a photo', threshold: 2 },
+        { tag: 'utan prompt', threshold: 0 },
+      ],
+    }
+    await writeOpfs(page, `${bank}/app-data/config.json`, JSON.stringify(changed))
+    // Sidan visar förhandsvisningen från 4.1.
+    await clickButton(page, 'Sök igen')
+    await waitForPreview(page)
+    await waitForText(page, 'Alla bilder får nya AI-taggar')
+    await clickButton(page, 'Starta import')
+    await waitForText(page, 'AI-taggarna sattes med 2 taggar', 300_000)
+    await waitForText(page, '1 taggar i app-data/config.json saknar')
+    const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
+    assert(index.aiTagging && index.aiTagging.config !== firstIndex!.aiTagging!.config, 'aiTagging ändrades inte')
+    const tagVectors = await readOpfsBytes(page, `${bank}/app-data/ai-taggar.bin`)
+    const tagRows = tagVectors && decodeVectors(toArrayBuffer(tagVectors), MODEL.dimensions)
+    assert(tagRows?.size === 2, `ai-taggar.bin har ${tagRows?.size} rader, väntade 2`)
+    for (const image of index.images) {
+      const wanted = image.previewProblem ? [] : ['alla']
+      assert(JSON.stringify(image.aiTags) === JSON.stringify(wanted), `${image.id} har ${image.aiTags}, väntade ${wanted}`)
+      const before = firstIndex!.images.find((record) => record.id === image.id)!
+      assert(JSON.stringify(image.tags) === JSON.stringify(before.tags), `${image.id}: nyckelorden ändrades`)
+    }
+    // Oförändrade taggar sätts inte om.
+    await clickButton(page, 'Sök efter ändringar')
+    await waitForPreview(page)
+    assert(!(await page.$('::-p-text(Alla bilder får nya AI-taggar)')), 'AI-taggarna sätts om fast inget har ändrats')
+
+    // Detaljvyn visar AI-taggarna skilt från nyckelorden.
+    const viewer = await openPage(`/?testdata&name=${bank}&keep`)
+    try {
+      await viewer.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await viewer.locator('.gallery-cell[data-index="0"]').click()
+      await viewer.waitForSelector('dialog.detail[open] .ai-tags', { timeout: 10_000 })
+      const shown = await viewer.$eval('dialog.detail[open] .ai-tags', (element) => (element as HTMLElement).innerText)
+      assert(shown.includes('alla') && shown.includes('Satta av AI'), `Detaljvyn visar AI-taggarna så här: ${shown}`)
+      await screenshot(viewer, '4.5-ai-taggar')
+    } finally {
+      await viewer.close()
+    }
   })
 
   await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {

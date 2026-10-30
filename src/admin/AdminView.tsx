@@ -28,6 +28,7 @@ const PHASE_TEXT: Record<Phase, string> = {
   hash: 'Räknar fingeravtryck',
   import: 'Importerar',
   ai: 'Räknar ut AI-vektorer',
+  tags: 'Sätter AI-taggar',
   copy: 'Kopierar original',
   save: 'Sparar index',
 }
@@ -284,7 +285,9 @@ export function AdminView({ bank, onClose }: Props) {
               ? `Importen avbröts efter ${count(state.done)} av ${count(state.total)} bilder. Det som är klart är sparat och fortsätter nästa gång.`
               : state.phase === 'ai'
                 ? `Importen avbröts när AI-vektorer för ${count(state.done)} av ${count(state.total)} bilder var klara. Det som är klart är sparat och fortsätter nästa gång.`
-                : 'Sökningen avbröts. Inget har ändrats.'}
+                : state.phase === 'tags'
+                  ? 'Importen avbröts när AI-taggarna sattes. Bilderna och AI-vektorerna är sparade och fortsätter nästa gång.'
+                  : 'Sökningen avbröts. Inget har ändrats.'}
           </p>
           <div className="actions">
             <button type="button" className="primary" onClick={scan}>
@@ -318,6 +321,24 @@ export function AdminView({ bank, onClose }: Props) {
               {state.result.ai.problem}
             </p>
           )}
+          {state.result.ai.model && !state.result.tags.problem && (
+            <p className="tags-result">
+              {state.result.tags.created && `app-data/config.json skapades med ${count(state.result.tags.tags)} förvalda taggar. `}
+              {state.result.tags.retagged && `AI-taggarna sattes med ${count(state.result.tags.tags)} taggar. `}
+              {count(state.result.tags.tagged)} bilder har AI-taggar.
+            </p>
+          )}
+          {state.result.tags.skipped > 0 && (
+            <p className="warning" role="alert">
+              {count(state.result.tags.skipped)} taggar i app-data/config.json saknar tag, prompt eller threshold, eller
+              finns redan. De användes inte.
+            </p>
+          )}
+          {state.result.tags.problem && (
+            <p className="warning" role="alert">
+              {state.result.tags.problem}
+            </p>
+          )}
           {state.result.copied && (
             <p className="copy-result">
               {count(state.result.copied.copied)} original kopierades till bildbankens original/.
@@ -343,7 +364,8 @@ interface PreviewProps {
 
 function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
   const work = summary.new.length + summary.changed.length + summary.moved.length
-  const nothing = work === 0 && summary.removed.length === 0 && !(summary.ai.model && summary.ai.missing)
+  const nothing =
+    work === 0 && summary.removed.length === 0 && !(summary.ai.model && summary.ai.missing) && !summary.ai.retag
   // Bilder som tas bort förlorar sina taggar och rättigheter i indexet. Har fel
   // originalmapp valts ser det ut som att alla bilder har tagits bort, så
   // borttagningen måste bekräftas.
@@ -369,12 +391,19 @@ function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
         </p>
       )}
       {summary.ai.model ? (
-        summary.ai.missing > 0 && (
-          <p className="note ai-note">
-            {count(summary.ai.missing)} bilder får AI-vektorer för AI-sök. Med grafikkort tar det några tiondels
-            sekunder per bild, utan grafikkort några sekunder.
-          </p>
-        )
+        <>
+          {summary.ai.missing > 0 && (
+            <p className="note ai-note">
+              {count(summary.ai.missing)} bilder får AI-vektorer för AI-sök. Med grafikkort tar det några tiondels
+              sekunder per bild, utan grafikkort några sekunder.
+            </p>
+          )}
+          {summary.ai.retag && (
+            <p className="note ai-note">
+              Alla bilder får nya AI-taggar från app-data/config.json, eftersom taggarna är nya eller har ändrats.
+            </p>
+          )}
+        </>
       ) : (
         <p className="warning ai-note">
           AI-modellen saknas i app-data/models/{MODEL.name}. Bilderna importeras, men kan inte hittas med AI-sök förrän

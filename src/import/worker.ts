@@ -7,12 +7,21 @@
 //   abort   avbryter efter den fil som håller på. Det som är klart sparas.
 
 import { decodeVectors, encodeVectors, type Vectors } from '../ai/embeddings.ts'
-import { hasModel, imageEmbedding, visionDevice, type Device } from '../ai/model.ts'
+import { hasModel, imageEmbedding, textEmbeddings, visionDevice, type Device } from '../ai/model.ts'
 import { MODEL } from '../ai/modelInfo.ts'
+import { configKey, DEFAULT_CONFIG, parseConfig, readConfig, tagsFor, type TagVector } from '../ai/tagConfig.ts'
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
-import { idNumber, INDEX_VERSION, type IndexDuplicate, type ImageRecord, type IndexFile } from '../catalog/types.ts'
+import {
+  formatId,
+  idNumber,
+  INDEX_VERSION,
+  type ImageRecord,
+  type IndexAiTagging,
+  type IndexDuplicate,
+  type IndexFile,
+} from '../catalog/types.ts'
 import { ensureDirectory, findDirectory, readFile, removeFile, writeFile } from '../fs/folder.ts'
 import { combinedHash, quickHash } from './hash.ts'
 import {
@@ -57,6 +66,8 @@ interface Session {
   vectors: Vectors
   // Finns AI-modellen i app-data/models/?
   model: boolean
+  // Hur AI-taggarna i indexet sattes.
+  tagging: IndexAiTagging | undefined
 }
 
 const scope = self as unknown as {
@@ -231,7 +242,21 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
   const model = await hasModel(bank)
   const pending = new Journal(bank, journal.records, new Map([...vectors].filter(([id]) => journal.vectors.has(id))))
   pending.drop(foreign)
-  session = { bank, originals, indexed, thumbs, previews, plan, journal: pending, resumed, duplicates, foreign, vectors, model }
+  session = {
+    bank,
+    originals,
+    indexed,
+    thumbs,
+    previews,
+    plan,
+    journal: pending,
+    resumed,
+    duplicates,
+    foreign,
+    vectors,
+    model,
+    tagging: index?.aiTagging,
+  }
   const paths = (change: PlanItem<HashedScannedFile>['change']) =>
     plan.items.filter((item) => item.change === change)
   return {
@@ -250,6 +275,7 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
       missing: plan.items.filter(
         (item) => !vectors.has(item.id) && !(item.change === 'unchanged' && item.previous?.previewProblem),
       ).length,
+      retag: model && (await tagsOutdated(bank, index?.aiTagging)),
     },
   }
 }
@@ -268,6 +294,7 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
     height: 0,
     takenAt: null,
     tags: [],
+    aiTags: [],
     description: '',
     durationSeconds: null,
     previewProblem: null,
@@ -283,10 +310,11 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
 }
 
 // Metadata läses och bilder skapas för nya och ändrade filer. En flyttad fil
-// har samma innehåll och behåller sina uppgifter och bilder.
+// har samma innehåll och behåller sina uppgifter, bilder och AI-taggar.
 async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): Promise<ImageRecord> {
-  const record = baseRecord(item)
-  if (item.change === 'moved') return record
+  if (item.change === 'moved') return baseRecord(item)
+  // AI-taggarna sätts när bilden har fått sin nya AI-vektor.
+  const record = { ...baseRecord(item), aiTags: [] }
   const file = await item.file.handle.getFile()
   if (isVideo(file.name)) {
     const video = await readVideoInfo(file)
@@ -381,6 +409,76 @@ async function computeVectors(current: Session, images: ImageRecord[]) {
   return result
 }
 
+const TAG_VECTORS = 'ai-taggar.bin'
+
+// Har taggarna i config.json ändrats sedan AI-taggarna sattes? En trasig
+// config.json räknas som ändrad, så att importen visar vad som är fel.
+async function tagsOutdated(bank: FileSystemDirectoryHandle, tagging: IndexAiTagging | undefined): Promise<boolean> {
+  try {
+    const file = await readFile(bank, 'app-data/config.json')
+    const config = file ? parseConfig(await file.text()).config : DEFAULT_CONFIG
+    return tagging?.model !== MODEL.name || tagging.config !== (await configKey(config))
+  } catch {
+    return true
+  }
+}
+
+// Sätter AI-taggar från taggarna i app-data/config.json. Görs om för alla
+// bilder när taggarna har ändrats eller när nya AI-vektorer har räknats ut.
+// Annars behåller bilderna sina AI-taggar, även när modellen saknas.
+async function setAiTags(current: Session, appData: FileSystemDirectoryHandle, images: ImageRecord[], computed: number) {
+  const result = {
+    retagged: false,
+    tags: 0,
+    skipped: 0,
+    created: false,
+    problem: null as string | null,
+    tagging: current.tagging,
+  }
+  if (!current.model) return result
+  try {
+    const { config, skipped, created } = await readConfig(current.bank, appData)
+    Object.assign(result, { tags: config.aiTags.length, skipped, created })
+    const key = await configKey(config)
+    const same = current.tagging?.model === MODEL.name && current.tagging.config === key
+    if (!computed && same) return result
+    // Taggarnas textvektorer sparas i ai-taggar.bin, rad n för tagg n. Har
+    // taggarna inte ändrats behöver textmodellen inte köras.
+    const file = same ? await readFile(appData, TAG_VECTORS) : null
+    const stored = file && decodeVectors(await file.arrayBuffer(), MODEL.dimensions)
+    let vectors = stored?.size === config.aiTags.length ? config.aiTags.map((_, n) => stored.get(formatId(n + 1))) : []
+    if (!vectors.every(Boolean) || !vectors.length) {
+      // Textmodellen tar några taggar åt gången, så att importen går att avbryta.
+      vectors = []
+      for (let start = 0; start < config.aiTags.length; start += 16) {
+        await breathe()
+        progress('tags', start, config.aiTags.length)
+        const chunk = config.aiTags.slice(start, start + 16)
+        vectors.push(...(await textEmbeddings(current.bank, chunk.map((tag) => tag.prompt))))
+      }
+      progress('tags', config.aiTags.length, config.aiTags.length)
+      const rows: Vectors = new Map(vectors.map((vector, n) => [formatId(n + 1), vector!]))
+      await writeFile(appData, TAG_VECTORS, new Blob([encodeVectors(rows, MODEL.dimensions)]))
+    }
+    const tags: TagVector[] = config.aiTags.map((tag, n) => ({ tag: tag.tag, threshold: tag.threshold, vector: vectors[n]! }))
+    for (const image of images) {
+      const vector = current.vectors.get(image.id)
+      image.aiTags = vector && !image.previewProblem ? tagsFor(vector, tags) : []
+    }
+    result.retagged = true
+    result.tagging = { model: MODEL.name, config: key }
+  } catch (error) {
+    if (error instanceof Aborted) {
+      await current.journal.flush()
+      throw error
+    }
+    // Nästa import försöker igen.
+    result.tagging = undefined
+    result.problem = `AI-taggarna kunde inte sättas: ${error instanceof Error ? error.message : error}`
+  }
+  return result
+}
+
 async function removeImages(current: Session, id: string) {
   await removeFile(current.thumbs, `${id}.webp`)
   await removeFile(current.previews, `${id}.webp`)
@@ -439,6 +537,8 @@ async function runImport(current: Session, copy: boolean) {
   const dropped = findDuplicates(all)
   const images = all.filter((image) => !dropped.has(image))
   const ai = await computeVectors(current, images)
+  const appData = await ensureDirectory(bank, 'app-data')
+  const tags = await setAiTags(current, appData, images, ai.computed)
   // Är originalmappen bildbankens egen original/ finns inget att kopiera.
   const bankOriginals = await findDirectory(bank, 'original')
   const inBank = bankOriginals ? await bankOriginals.isSameEntry(current.originals) : false
@@ -451,7 +551,6 @@ async function runImport(current: Session, copy: boolean) {
   ]
   // Vektorerna skrivs före indexet. Varje rad har sitt id, så ett äldre index
   // fungerar ihop med en nyare vektorfil.
-  const appData = await ensureDirectory(bank, 'app-data')
   const vectors: Vectors = new Map()
   for (const image of images) {
     const vector = current.vectors.get(image.id)
@@ -467,6 +566,7 @@ async function runImport(current: Session, copy: boolean) {
     ...(vectors.size && {
       embeddings: { file: 'embeddings.bin', model: MODEL.name, dimensions: MODEL.dimensions, count: vectors.size },
     }),
+    ...(tags.tagging && { aiTagging: tags.tagging }),
   }
   await writeIndexFile(appData, JSON.stringify(index, null, 2))
   await journal.remove()
@@ -486,6 +586,10 @@ async function runImport(current: Session, copy: boolean) {
     duplicates: [...dropped].map(([image, kept]) => ({ path: image.path, sameAs: kept.path })),
     copied,
     ai: { model: current.model, computed: ai.computed, total: vectors.size, problem: ai.problem, device: ai.device },
+    tags: {
+      tagged: images.filter((image) => image.aiTags.length).length,
+      retagged: tags.retagged,
+      tags: tags.tags, skipped: tags.skipped, created: tags.created, problem: tags.problem },
   }
 }
 

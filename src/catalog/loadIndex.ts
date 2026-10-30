@@ -26,6 +26,7 @@ export function parseIndex(text: string, name = 'app-data/index.json'): IndexFil
     images: index.images.map((image) => ({
       ...image,
       alternates: image.alternates ?? [],
+      aiTags: image.aiTags ?? [],
       durationSeconds: image.durationSeconds ?? null,
       previewProblem: image.previewProblem ?? null,
       hash: image.hash ?? null,

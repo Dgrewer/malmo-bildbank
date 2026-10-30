@@ -14,6 +14,16 @@ interface Props {
   onClose: () => void
 }
 
+function TagList({ tags }: { tags: string[] }) {
+  return (
+    <ul className="tag-list">
+      {tags.map((tag) => (
+        <li key={tag}>{tag}</li>
+      ))}
+    </ul>
+  )
+}
+
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
@@ -153,6 +163,17 @@ export function DetailView({ image, position, count, previews, onNavigate, onClo
           </dd>
           <dt>Samtycke</dt>
           <dd>{CONSENT_TEXT[image.consent]}</dd>
+          <dt>Nyckelord</dt>
+          <dd>{image.tags.length ? <TagList tags={image.tags} /> : 'Inga nyckelord'}</dd>
+          {image.aiTags.length > 0 && (
+            <>
+              <dt>AI-taggar</dt>
+              <dd className="ai-tags">
+                <TagList tags={image.aiTags} />
+                <span className="ai-tags-note">Satta av AI. De kan vara fel.</span>
+              </dd>
+            </>
+          )}
         </dl>
       </div>
     </dialog>
