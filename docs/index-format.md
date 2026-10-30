@@ -147,7 +147,7 @@ Galleriet och detaljvyn visar en lista, Taggar, med bildens nyckelord och AI-tag
 - Taggar som hör ihop (`related`, även i flera led) läggs till, så att en bild med kafé också visas med restaurang.
 - Ett klick på en tagg visar alla bilder med den i galleriet. "Visa alla bilder" tar bort filtret.
 - Synonymer, grupper och dolda nyckelord påverkar inte vilka AI-taggar bilderna får, och ingår inte i fingeravtrycket i `aiTagging.config`.
-- Minst en tagg per bild: en bild som inte når någon gräns får ändå den tagg den ligger närmast. Under bilden är taggen märkt ”närmast”. Ett klick gör den grön och ett klick till behåller den, som om den lagts till för hand (`included` eller exempel). Krysset bredvid tar bort den (`excluded`).
+- Minst en tagg per bild: en bild som inte når någon gräns får ändå den tagg den ligger närmast. Under bilden är taggen märkt ”närmast”. Fältet är delat: ett klick på namnet (grönt när musen är över) behåller taggen, som om den lagts till för hand (`included` eller exempel). Ett klick på krysset (rött) tar bort den (`excluded`).
 
 ```json
 {

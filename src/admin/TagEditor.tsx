@@ -1212,7 +1212,7 @@ function ImagesView({
         bilder, t.ex. andra bilder i samma serie, följer med. Inget ändras förrän du trycker Spara ändringar.
         {onlyUntagged &&
           (drafts.atLeastOneTag
-            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på den så blir den grön, och klicka igen för att behålla den. Är den fel: klicka på krysset.'
+            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på namnet för att behålla den. Är den fel: klicka på krysset.'
             : ' Slå på Minst en tagg per bild om alla bilder ska få minst en tagg.')}
       </p>
       <datalist id="tag-name-list">
@@ -1261,8 +1261,7 @@ function ImageTagsThumb({
   onClear: (tag: string) => void
 }) {
   const thumb = useObjectUrl(thumbs, `${item.image.id}.webp`)
-  // Taggen som är markerad. Nästa klick tar bort den, eller behåller den om
-  // den är bildens närmaste tagg.
+  // Taggen som är markerad för borttagning. Nästa klick tar bort den.
   const [armed, setArmed] = useState<string | null>(null)
   const [text, setText] = useState('')
   // Ett nytt ord som liknar befintliga taggar. Användaren väljer en av dem eller ordet.
@@ -1298,30 +1297,23 @@ function ImageTagsThumb({
         {item.tags.map(({ tag, fallback, manual }) => (
           <li key={tag}>
             {fallback ? (
-              // Den närmaste taggen bekräftas: ett klick gör den grön, ett klick
-              // till behåller den på bilden. Krysset tar bort den.
-              <>
+              // Den närmaste taggen är delad: vänstra delen behåller den på
+              // bilden, krysset till höger tar bort den.
+              <span className="chip split fallback" data-tag={tag}>
                 <button
                   type="button"
-                  className={armed === tag ? 'chip fallback keep' : 'chip fallback'}
-                  data-tag={tag}
+                  className="split-keep"
                   disabled={disabled}
-                  title={armed === tag ? 'Klicka igen för att behålla taggen på bilden' : 'Klicka om taggen stämmer'}
-                  onClick={() => {
-                    if (armed === tag) {
-                      setArmed(null)
-                      onSet(tag, true)
-                    } else setArmed(tag)
-                  }}
-                  onBlur={() => setArmed((value) => (value === tag ? null : value))}
+                  aria-label={`Behåll ${tag} på bilden`}
+                  title="Taggen stämmer. Behåll den på bilden."
+                  onClick={() => onSet(tag, true)}
                 >
-                  {armed === tag && <span aria-hidden="true">✓ </span>}
                   {tag}
-                  <small>{armed === tag ? ' klicka igen för att behålla' : ' närmast'}</small>
+                  <small> närmast</small>
                 </button>
                 <button
                   type="button"
-                  className="chip-remove"
+                  className="split-remove"
                   disabled={disabled}
                   aria-label={`Ta bort ${tag} från bilden`}
                   title="Taggen är fel. Ta bort den från bilden."
@@ -1329,7 +1321,7 @@ function ImageTagsThumb({
                 >
                   ✕
                 </button>
-              </>
+              </span>
             ) : (
               <button
                 type="button"

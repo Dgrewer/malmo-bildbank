@@ -1432,16 +1432,14 @@ try {
     await step('ångrad tagg', page.waitForFunction((selector) => !document.querySelector(selector), { timeout: 30_000 }, `${chip}.removed`))
     await clickButton(page, 'Ångra ändringar')
 
-    // En närmaste tagg blir grön vid första klicket och behålls vid det andra.
+    // Ett klick på den närmaste taggens namn behåller den på bilden.
     const nearest = await page.$eval('.image-tags', (list) => {
       const element = list.querySelector('.chip.fallback')
       return element && [element.closest('li[data-id]')!.getAttribute('data-id')!, element.getAttribute('data-tag')!]
     })
     if (nearest) {
       const nearestChip = `.image-tags > li[data-id="${nearest[0]}"] .chip[data-tag="${nearest[1]}"]`
-      await page.click(nearestChip)
-      await page.waitForSelector(`${nearestChip}.keep`, { timeout: 5_000 })
-      await page.click(nearestChip)
+      await page.click(`${nearestChip} .split-keep`)
       await step('behållen närmaste tagg', page.waitForSelector(`${nearestChip}:not(.fallback)`, { timeout: 30_000 }))
       await clickButton(page, 'Ångra ändringar')
     }

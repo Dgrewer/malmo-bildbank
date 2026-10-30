@@ -9,7 +9,7 @@
   --warning-bg: #fff4d6;
   --warning-text: #6b4a00;
   --blocked: #b3261e;
-  --keep: #1e7a34;
+  --keep-bg: #8fe0a0;
 
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -610,6 +610,10 @@ button.primary {
   gap: 0.15rem;
 }
 
+.tag-thumbs .image-tag-chips li {
+  display: block;
+}
+
 .tag-thumb {
   position: relative;
 }
@@ -758,23 +762,42 @@ button.primary {
   color: #fff;
 }
 
-.chip.armed small,
-.chip.keep small {
+.chip.armed small {
   color: #fff;
 }
 
-.chip.keep {
-  border-color: var(--keep);
-  background: var(--keep);
-  color: #fff;
+/* Den närmaste taggen: vänstra delen behåller, krysset tar bort. */
+.chip.split {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
 }
 
-.chip-remove {
-  margin-left: 0.15rem;
-  padding: 0.1rem 0.35rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
+.chip.split button {
+  padding: 0.1rem 0.45rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.8rem;
+}
+
+.chip.split .split-remove {
+  padding: 0.1rem 0.4rem;
+  border-left: 1px solid var(--border);
   color: var(--blocked);
+}
+
+.chip.split .split-keep:hover:not(:disabled),
+.chip.split .split-keep:focus-visible {
+  background: var(--keep-bg);
+}
+
+.chip.split .split-remove:hover:not(:disabled),
+.chip.split .split-remove:focus-visible {
+  background: var(--error-bg);
 }
 
 .chip.removed {
