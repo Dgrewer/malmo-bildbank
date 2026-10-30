@@ -9,6 +9,7 @@
   --warning-bg: #fff4d6;
   --warning-text: #6b4a00;
   --blocked: #b3261e;
+  --keep: #1e7a34;
 
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -757,8 +758,23 @@ button.primary {
   color: #fff;
 }
 
-.chip.armed small {
+.chip.armed small,
+.chip.keep small {
   color: #fff;
+}
+
+.chip.keep {
+  border-color: var(--keep);
+  background: var(--keep);
+  color: #fff;
+}
+
+.chip-remove {
+  margin-left: 0.15rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--blocked);
 }
 
 .chip.removed {

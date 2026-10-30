@@ -1399,9 +1399,9 @@ try {
     // den. En ny tagg som skrivs in får bilden som exempel.
     await step('Alla bilder', clickButton(page, 'Alla bilder och deras taggar'))
     await page.waitForSelector('.image-tags > li .chip', { timeout: 60_000 })
-    const [first, firstTag] = await page.$eval('.image-tags > li', (element) => [
+    const [first, firstTag] = await page.$eval('.image-tags > li:has(.chip:not(.fallback))', (element) => [
       element.getAttribute('data-id')!,
-      element.querySelector('.chip')!.getAttribute('data-tag')!,
+      element.querySelector('.chip:not(.fallback)')!.getAttribute('data-tag')!,
     ])
     const chip = `.image-tags > li[data-id="${first}"] .chip[data-tag="${firstTag}"]`
     await page.click(chip)
@@ -1431,6 +1431,20 @@ try {
     await page.click(`${chip}.removed`)
     await step('ångrad tagg', page.waitForFunction((selector) => !document.querySelector(selector), { timeout: 30_000 }, `${chip}.removed`))
     await clickButton(page, 'Ångra ändringar')
+
+    // En närmaste tagg blir grön vid första klicket och behålls vid det andra.
+    const nearest = await page.$eval('.image-tags', (list) => {
+      const element = list.querySelector('.chip.fallback')
+      return element && [element.closest('li[data-id]')!.getAttribute('data-id')!, element.getAttribute('data-tag')!]
+    })
+    if (nearest) {
+      const nearestChip = `.image-tags > li[data-id="${nearest[0]}"] .chip[data-tag="${nearest[1]}"]`
+      await page.click(nearestChip)
+      await page.waitForSelector(`${nearestChip}.keep`, { timeout: 5_000 })
+      await page.click(nearestChip)
+      await step('behållen närmaste tagg', page.waitForSelector(`${nearestChip}:not(.fallback)`, { timeout: 30_000 }))
+      await clickButton(page, 'Ångra ändringar')
+    }
 
     // Okända nyckelord: ett kopplas till taggen alla, ett döljs.
     await clickButton(page, 'Okända nyckelord')

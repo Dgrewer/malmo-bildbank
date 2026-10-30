@@ -1212,7 +1212,7 @@ function ImagesView({
         bilder, t.ex. andra bilder i samma serie, följer med. Inget ändras förrän du trycker Spara ändringar.
         {onlyUntagged &&
           (drafts.atLeastOneTag
-            ? ' Taggen märkt ”närmast” får bilden genom Minst en tagg per bild.'
+            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på den så blir den grön, och klicka igen för att behålla den. Är den fel: klicka på krysset.'
             : ' Slå på Minst en tagg per bild om alla bilder ska få minst en tagg.')}
       </p>
       <datalist id="tag-name-list">
@@ -1261,7 +1261,8 @@ function ImageTagsThumb({
   onClear: (tag: string) => void
 }) {
   const thumb = useObjectUrl(thumbs, `${item.image.id}.webp`)
-  // Taggen som är markerad för borttagning. Nästa klick tar bort den.
+  // Taggen som är markerad. Nästa klick tar bort den, eller behåller den om
+  // den är bildens närmaste tagg.
   const [armed, setArmed] = useState<string | null>(null)
   const [text, setText] = useState('')
   // Ett nytt ord som liknar befintliga taggar. Användaren väljer en av dem eller ordet.
@@ -1296,25 +1297,59 @@ function ImageTagsThumb({
       <ul className="image-tag-chips">
         {item.tags.map(({ tag, fallback, manual }) => (
           <li key={tag}>
-            <button
-              type="button"
-              className={armed === tag ? 'chip armed' : 'chip'}
-              data-tag={tag}
-              disabled={disabled}
-              title={armed === tag ? 'Klicka igen för att ta bort taggen från bilden' : 'Klicka om taggen är fel'}
-              onClick={() => {
-                if (armed === tag) {
-                  setArmed(null)
-                  onSet(tag, false)
-                } else setArmed(tag)
-              }}
-              onBlur={() => setArmed((value) => (value === tag ? null : value))}
-            >
-              {armed === tag && <span aria-hidden="true">✕ </span>}
-              {tag}
-              {fallback && <small> närmast</small>}
-              {manual && <small> för hand</small>}
-            </button>
+            {fallback ? (
+              // Den närmaste taggen bekräftas: ett klick gör den grön, ett klick
+              // till behåller den på bilden. Krysset tar bort den.
+              <>
+                <button
+                  type="button"
+                  className={armed === tag ? 'chip fallback keep' : 'chip fallback'}
+                  data-tag={tag}
+                  disabled={disabled}
+                  title={armed === tag ? 'Klicka igen för att behålla taggen på bilden' : 'Klicka om taggen stämmer'}
+                  onClick={() => {
+                    if (armed === tag) {
+                      setArmed(null)
+                      onSet(tag, true)
+                    } else setArmed(tag)
+                  }}
+                  onBlur={() => setArmed((value) => (value === tag ? null : value))}
+                >
+                  {armed === tag && <span aria-hidden="true">✓ </span>}
+                  {tag}
+                  <small>{armed === tag ? ' klicka igen för att behålla' : ' närmast'}</small>
+                </button>
+                <button
+                  type="button"
+                  className="chip-remove"
+                  disabled={disabled}
+                  aria-label={`Ta bort ${tag} från bilden`}
+                  title="Taggen är fel. Ta bort den från bilden."
+                  onClick={() => onSet(tag, false)}
+                >
+                  ✕
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={armed === tag ? 'chip armed' : 'chip'}
+                data-tag={tag}
+                disabled={disabled}
+                title={armed === tag ? 'Klicka igen för att ta bort taggen från bilden' : 'Klicka om taggen är fel'}
+                onClick={() => {
+                  if (armed === tag) {
+                    setArmed(null)
+                    onSet(tag, false)
+                  } else setArmed(tag)
+                }}
+                onBlur={() => setArmed((value) => (value === tag ? null : value))}
+              >
+                {armed === tag && <span aria-hidden="true">✕ </span>}
+                {tag}
+                {manual && <small> för hand</small>}
+              </button>
+            )}
           </li>
         ))}
         {item.removed.map((tag) => (
