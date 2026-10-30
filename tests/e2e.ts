@@ -1432,7 +1432,12 @@ try {
     await step('ångrad tagg', page.waitForFunction((selector) => !document.querySelector(selector), { timeout: 30_000 }, `${chip}.removed`))
     await clickButton(page, 'Ångra ändringar')
 
-    // Ett klick på den närmaste taggens namn behåller den på bilden.
+    // Ett klick på den närmaste taggens namn behåller den, krysset tar bort
+    // den. Bilden ligger kvar och visar valet tills man sparar.
+    await clickButton(page, 'Bilder utan AI-taggar')
+    await page.waitForFunction(() => /når inte gränsen/.test(document.querySelector('.tag-untagged .tag-hits')?.textContent ?? ''), {
+      timeout: 60_000,
+    })
     const nearest = await page.$eval('.image-tags', (list) => {
       const element = list.querySelector('.chip.fallback')
       return element && [element.closest('li[data-id]')!.getAttribute('data-id')!, element.getAttribute('data-tag')!]
@@ -1440,8 +1445,18 @@ try {
     if (nearest) {
       const nearestChip = `.image-tags > li[data-id="${nearest[0]}"] .chip[data-tag="${nearest[1]}"]`
       await page.click(`${nearestChip} .split-keep`)
-      await step('behållen närmaste tagg', page.waitForSelector(`${nearestChip}:not(.fallback)`, { timeout: 30_000 }))
+      await step('vald närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-keep`, { timeout: 30_000 }))
+      await page.click(`${nearestChip} .split-remove`)
+      await step('borttagen närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-remove`, { timeout: 30_000 }))
+      await page.click(`${nearestChip} .split-remove`)
+      await step('ångrat val', page.waitForSelector(`${nearestChip}.fallback`, { timeout: 30_000 }))
+      await page.click(`${nearestChip} .split-keep`)
+      await step('behållen närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-keep`, { timeout: 30_000 }))
+      await waitForText(page, 'Du har ändringar som inte är sparade')
       await clickButton(page, 'Ångra ändringar')
+      await step('ångrade ändringar', page.waitForSelector(`${nearestChip}.fallback`, { timeout: 30_000 }))
+    } else {
+      console.log('      Ingen bild fick en närmaste tagg, så valen under bilden testades inte')
     }
 
     // Okända nyckelord: ett kopplas till taggen alla, ett döljs.

@@ -9,7 +9,8 @@
   --warning-bg: #fff4d6;
   --warning-text: #6b4a00;
   --blocked: #b3261e;
-  --keep-bg: #8fe0a0;
+  --keep-bg: #e3f4e6;
+  --keep: #1f9d45;
 
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -785,9 +786,10 @@ button.primary {
 }
 
 .chip.split .split-remove {
-  padding: 0.1rem 0.4rem;
+  padding: 0 0.3rem;
   border-left: 1px solid var(--border);
   color: var(--blocked);
+  font-size: 0.6rem;
 }
 
 .chip.split .split-keep:hover:not(:disabled),
@@ -798,6 +800,33 @@ button.primary {
 .chip.split .split-remove:hover:not(:disabled),
 .chip.split .split-remove:focus-visible {
   background: var(--error-bg);
+}
+
+/* Valt: fältet är fyllt tills man sparar. */
+.chip.split.chosen-keep {
+  border-color: var(--keep);
+}
+
+.chip.split.chosen-keep .split-keep,
+.chip.split.chosen-keep .split-keep:hover:not(:disabled) {
+  background: var(--keep);
+  color: #fff;
+}
+
+.chip.split.chosen-remove {
+  border-color: var(--blocked);
+}
+
+.chip.split.chosen-remove .split-remove,
+.chip.split.chosen-remove .split-remove:hover:not(:disabled) {
+  background: var(--blocked);
+  border-left-color: var(--blocked);
+  color: #fff;
+}
+
+.chip.split.chosen-remove .split-keep {
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .chip.removed {

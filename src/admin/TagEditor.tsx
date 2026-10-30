@@ -191,6 +191,9 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
   const [filter, setFilter] = useState('')
   const [saving, setSaving] = useState<{ done: number; total: number } | null>(null)
   const [message, setMessage] = useState<{ kind: 'done' | 'error'; text: string } | null>(null)
+  // Valen på bildernas närmaste taggar sedan man sparade. Bilderna ligger kvar
+  // i vyn och valen syns tills man sparar eller ångrar.
+  const [choices, setChoices] = useState<Choices>(new Map())
   // Textvektorer efter prompt, så att samma beskrivning bara räknas ut en gång.
   const vectors = useRef<PromptVectors>(new Map())
 
@@ -348,16 +351,33 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
     }
   }
 
-  // Ångrar en rättning för hand: bilden får taggen om värdet räcker.
-  function clearImageTag(id: string, name: string) {
+  // Ångrar en rättning för hand: bilden får taggen om värdet räcker. Blev
+  // bilden ett exempel för att den behölls under bilden tas det bort.
+  function clearImageTag(id: string, name: string, example = false) {
     change((all) => ({
       ...all,
-      tags: all.tags.map((draft) =>
-        draft.tag === name
-          ? { ...draft, excluded: without(draft.excluded, id), included: without(draft.included, id) }
-          : draft,
-      ),
+      tags: all.tags.map((draft) => {
+        if (draft.tag !== name) return draft
+        const patch: Partial<AiTag> = { excluded: without(draft.excluded, id), included: without(draft.included, id) }
+        if (example && draft.examples?.includes(id)) {
+          patch.examples = without(draft.examples, id)
+          if (!patch.examples) patch.threshold = TEXT_RANGE.start
+        }
+        return { ...draft, ...patch }
+      }),
     }))
+  }
+
+  function choose(id: string, tag: string, choice: Choice | null) {
+    setChoices((all) => {
+      const next = new Map(all)
+      const forImage = new Map(next.get(id))
+      if (choice) forImage.set(tag, choice)
+      else forImage.delete(tag)
+      if (forImage.size) next.set(id, forImage)
+      else next.delete(id)
+      return next
+    })
   }
 
   async function saveAll() {
@@ -384,6 +404,7 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
         tags: renamed.tags.map((draft) => ({ ...draft, tag: draft.tag.trim(), prompt: draft.prompt.trim() })),
       }
       setDrafts(saved)
+      setChoices(new Map())
       setState({ kind: 'ready', data: { ...data, index, byId: new Map(index.images.map((i) => [i.id, i])), saved } })
       const tagged = index.images.filter((image) => image.aiTags.length).length
       setMessage({ kind: 'done', text: `Sparat. ${count(tagged)} bilder har AI-taggar.` })
@@ -429,6 +450,7 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
           disabled={!dirty || !!saving}
           onClick={() => {
             setDrafts(data.saved)
+            setChoices(new Map())
             setMessage(null)
           }}
         >
@@ -567,8 +589,10 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
             vectors={vectors.current}
             vocabulary={vocabulary}
             disabled={!!saving}
+            choices={choices}
             onSet={setImageTag}
             onClear={clearImageTag}
+            onChoose={choose}
           />
         ) : current ? (
           <TagDetail
@@ -1067,9 +1091,15 @@ interface ImagesProps {
   vectors: PromptVectors
   vocabulary: Vocabulary
   disabled: boolean
+  choices: Choices
   onSet: (id: string, tag: string, on: boolean) => void
-  onClear: (id: string, tag: string) => void
+  onClear: (id: string, tag: string, example?: boolean) => void
+  onChoose: (id: string, tag: string, choice: Choice | null) => void
 }
+
+// Ett val på en bilds närmaste tagg: behåll den eller ta bort den.
+type Choice = 'keep' | 'remove'
+type Choices = Map<string, Map<string, Choice>>
 
 interface ImageTags {
   image: ImageRecord
@@ -1141,8 +1171,10 @@ function ImagesView({
   vectors,
   vocabulary,
   disabled,
+  choices,
   onSet,
   onClear,
+  onChoose,
 }: ImagesProps) {
   const [ready, setReady] = useState<{ config: BankConfig } | { error: string } | null>(null)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -1180,7 +1212,8 @@ function ImagesView({
     [ready, data, vectors],
   )
   const untagged = all.filter((item) => item.untagged)
-  const list = onlyUntagged ? untagged : all
+  // En bild där man har valt på den närmaste taggen ligger kvar tills man sparar.
+  const list = onlyUntagged ? all.filter((item) => item.untagged || choices.has(item.image.id)) : all
   const names = useMemo(() => drafts.tags.map((draft) => draft.tag.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b, 'sv')), [drafts])
 
   if (ready && 'error' in ready) {
@@ -1212,7 +1245,7 @@ function ImagesView({
         bilder, t.ex. andra bilder i samma serie, följer med. Inget ändras förrän du trycker Spara ändringar.
         {onlyUntagged &&
           (drafts.atLeastOneTag
-            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på namnet för att behålla den. Är den fel: klicka på krysset.'
+            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på namnet, så blir det grönt och taggen behålls. Är den fel: klicka på krysset, så blir det rött och taggen tas bort. Bilden ligger kvar här och visar ditt val tills du sparar. Klicka på samma del igen för att ångra.'
             : ' Slå på Minst en tagg per bild om alla bilder ska få minst en tagg.')}
       </p>
       <datalist id="tag-name-list">
@@ -1228,9 +1261,11 @@ function ImagesView({
             thumbs={data.thumbs}
             disabled={disabled}
             showNear={onlyUntagged}
+            choices={choices.get(item.image.id)}
             suggest={(word) => suggestTags(word, vocabulary)}
             onSet={(tag, on) => onSet(item.image.id, tag, on)}
-            onClear={(tag) => onClear(item.image.id, tag)}
+            onClear={(tag, example) => onClear(item.image.id, tag, example)}
+            onChoose={(tag, choice) => onChoose(item.image.id, tag, choice)}
           />
         ))}
       </ul>
@@ -1248,17 +1283,22 @@ function ImageTagsThumb({
   thumbs,
   disabled,
   showNear,
+  choices,
   suggest,
   onSet,
   onClear,
+  onChoose,
 }: {
   item: ImageTags
   thumbs: FileSystemDirectoryHandle
   disabled: boolean
   showNear: boolean
+  // Valen på bildens närmaste taggar sedan man sparade.
+  choices: Map<string, Choice> | undefined
   suggest: (word: string) => { exact: string | null; near: string[] }
   onSet: (tag: string, on: boolean) => void
-  onClear: (tag: string) => void
+  onClear: (tag: string, example?: boolean) => void
+  onChoose: (tag: string, choice: Choice | null) => void
 }) {
   const thumb = useObjectUrl(thumbs, `${item.image.id}.webp`)
   // Taggen som är markerad för borttagning. Nästa klick tar bort den.
@@ -1294,70 +1334,82 @@ function ImageTagsThumb({
         )}
       </div>
       <ul className="image-tag-chips">
-        {item.tags.map(({ tag, fallback, manual }) => (
-          <li key={tag}>
-            {fallback ? (
-              // Den närmaste taggen är delad: vänstra delen behåller den på
-              // bilden, krysset till höger tar bort den.
-              <span className="chip split fallback" data-tag={tag}>
+        {/* Taggar man har valt på står först, så att de inte flyttar sig. */}
+        {[...(choices ?? [])].map(([tag, choice]) => (
+          <li key={`choice-${tag}`}>
+            <SplitChip
+              tag={tag}
+              choice={choice}
+              disabled={disabled}
+              onKeep={() => {
+                if (choice === 'keep') onClear(tag, true)
+                else onSet(tag, true)
+                onChoose(tag, choice === 'keep' ? null : 'keep')
+              }}
+              onRemove={() => {
+                if (choice === 'remove') onClear(tag)
+                else onSet(tag, false)
+                onChoose(tag, choice === 'remove' ? null : 'remove')
+              }}
+            />
+          </li>
+        ))}
+        {item.tags
+          .filter(({ tag }) => !choices?.has(tag))
+          .map(({ tag, fallback, manual }) => (
+            <li key={tag}>
+              {fallback ? (
+                <SplitChip
+                  tag={tag}
+                  choice={null}
+                  disabled={disabled}
+                  onKeep={() => {
+                    onSet(tag, true)
+                    onChoose(tag, 'keep')
+                  }}
+                  onRemove={() => {
+                    onSet(tag, false)
+                    onChoose(tag, 'remove')
+                  }}
+                />
+              ) : (
                 <button
                   type="button"
-                  className="split-keep"
+                  className={armed === tag ? 'chip armed' : 'chip'}
+                  data-tag={tag}
                   disabled={disabled}
-                  aria-label={`Behåll ${tag} på bilden`}
-                  title="Taggen stämmer. Behåll den på bilden."
-                  onClick={() => onSet(tag, true)}
+                  title={armed === tag ? 'Klicka igen för att ta bort taggen från bilden' : 'Klicka om taggen är fel'}
+                  onClick={() => {
+                    if (armed === tag) {
+                      setArmed(null)
+                      onSet(tag, false)
+                    } else setArmed(tag)
+                  }}
+                  onBlur={() => setArmed((value) => (value === tag ? null : value))}
                 >
+                  {armed === tag && <span aria-hidden="true">✕ </span>}
                   {tag}
-                  <small> närmast</small>
+                  {manual && <small> för hand</small>}
                 </button>
-                <button
-                  type="button"
-                  className="split-remove"
-                  disabled={disabled}
-                  aria-label={`Ta bort ${tag} från bilden`}
-                  title="Taggen är fel. Ta bort den från bilden."
-                  onClick={() => onSet(tag, false)}
-                >
-                  ✕
-                </button>
-              </span>
-            ) : (
+              )}
+            </li>
+          ))}
+        {item.removed
+          .filter((tag) => !choices?.has(tag))
+          .map((tag) => (
+            <li key={`removed-${tag}`}>
               <button
                 type="button"
-                className={armed === tag ? 'chip armed' : 'chip'}
+                className="chip removed"
                 data-tag={tag}
                 disabled={disabled}
-                title={armed === tag ? 'Klicka igen för att ta bort taggen från bilden' : 'Klicka om taggen är fel'}
-                onClick={() => {
-                  if (armed === tag) {
-                    setArmed(null)
-                    onSet(tag, false)
-                  } else setArmed(tag)
-                }}
-                onBlur={() => setArmed((value) => (value === tag ? null : value))}
+                title="Borttagen från bilden. Klicka för att ångra."
+                onClick={() => onClear(tag)}
               >
-                {armed === tag && <span aria-hidden="true">✕ </span>}
-                {tag}
-                {manual && <small> för hand</small>}
+                <s>{tag}</s> ↶
               </button>
-            )}
-          </li>
-        ))}
-        {item.removed.map((tag) => (
-          <li key={`removed-${tag}`}>
-            <button
-              type="button"
-              className="chip removed"
-              data-tag={tag}
-              disabled={disabled}
-              title="Borttagen från bilden. Klicka för att ångra."
-              onClick={() => onClear(tag)}
-            >
-              <s>{tag}</s> ↶
-            </button>
-          </li>
-        ))}
+            </li>
+          ))}
       </ul>
       {showNear && item.near.length > 0 && (
         <p className="near-tags">
@@ -1407,6 +1459,51 @@ function ImageTagsThumb({
         </p>
       )}
     </li>
+  )
+}
+
+// Den närmaste taggen, delad i två: namnet behåller den på bilden och krysset
+// tar bort den. Valet syns tills man sparar, och ett klick till på samma del
+// ångrar det.
+function SplitChip({
+  tag,
+  choice,
+  disabled,
+  onKeep,
+  onRemove,
+}: {
+  tag: string
+  choice: Choice | null
+  disabled: boolean
+  onKeep: () => void
+  onRemove: () => void
+}) {
+  return (
+    <span className={choice ? `chip split chosen-${choice}` : 'chip split fallback'} data-tag={tag}>
+      <button
+        type="button"
+        className="split-keep"
+        disabled={disabled}
+        aria-pressed={choice === 'keep'}
+        aria-label={`Behåll ${tag} på bilden`}
+        title={choice === 'keep' ? 'Behålls när du sparar. Klicka för att ångra.' : 'Taggen stämmer. Behåll den på bilden.'}
+        onClick={onKeep}
+      >
+        {tag}
+        {!choice && <small> närmast</small>}
+      </button>
+      <button
+        type="button"
+        className="split-remove"
+        disabled={disabled}
+        aria-pressed={choice === 'remove'}
+        aria-label={`Ta bort ${tag} från bilden`}
+        title={choice === 'remove' ? 'Tas bort när du sparar. Klicka för att ångra.' : 'Taggen är fel. Ta bort den från bilden.'}
+        onClick={onRemove}
+      >
+        ✕
+      </button>
+    </span>
   )
 }
 
