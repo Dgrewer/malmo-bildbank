@@ -45,7 +45,8 @@ export function buildVocabulary(config: BankConfig): Vocabulary {
   }
 
   // Taggar som hör ihop bildar grupper, även i flera led: hör slott ihop med
-  // fästning och fästning med borg hör alla tre ihop.
+  // fästning och fästning med borg hör alla tre ihop. Ett ord som inte är en
+  // tagg, t.ex. Malmöhus för slott, blir en tagg i gruppen.
   const parent = new Map<string, string>()
   const find = (name: string): string => {
     const up = parent.get(name)
@@ -54,28 +55,34 @@ export function buildVocabulary(config: BankConfig): Vocabulary {
     parent.set(name, root)
     return root
   }
+  const names = config.aiTags.map((tag) => tag.tag)
   for (const tag of config.aiTags) {
     for (const other of tag.related ?? []) {
-      const name = byWord.get(wordKey(other))
-      if (name && name !== tag.tag) parent.set(find(name), find(tag.tag))
+      let name = byWord.get(wordKey(other))
+      if (!name) {
+        name = other.trim()
+        byWord.set(wordKey(name), name)
+        names.push(name)
+      }
+      if (name !== tag.tag) parent.set(find(name), find(tag.tag))
     }
   }
   const members = new Map<string, string[]>()
-  for (const tag of config.aiTags) {
-    const root = find(tag.tag)
-    members.set(root, [...(members.get(root) ?? []), tag.tag])
+  for (const name of names) {
+    const root = find(name)
+    members.set(root, [...(members.get(root) ?? []), name])
   }
   const groups = new Map<string, string[]>()
-  for (const tag of config.aiTags) {
-    const group = members.get(find(tag.tag))!
-    if (group.length > 1) groups.set(tag.tag, group)
+  for (const name of names) {
+    const group = members.get(find(name))!
+    if (group.length > 1) groups.set(name, group)
   }
 
   return {
     byWord,
     groups,
     hidden: new Set((config.hiddenKeywords ?? []).map(wordKey)),
-    names: config.aiTags.map((tag) => tag.tag),
+    names,
   }
 }
 

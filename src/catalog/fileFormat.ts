@@ -59,6 +59,13 @@ export function fileFormat(path: string): string {
   return NAMES[ext] ?? (ext.toUpperCase() || 'Okänt format')
 }
 
+// "1920 × 1080 pixlar, 300 dpi". Dpi visas bara när filen anger den.
+export function formatResolution({ width, height, dpi }: { width: number; height: number; dpi?: number | null }): string {
+  if (!width || !height) return 'Okänd'
+  const pixels = `${width.toLocaleString('sv-SE')} × ${height.toLocaleString('sv-SE')} pixlar`
+  return dpi ? `${pixels}, ${dpi} dpi` : pixels
+}
+
 // 6.4 -> "0:06", 3725 -> "1:02:05"
 export function formatDuration(seconds: number): string {
   const total = Math.round(seconds)

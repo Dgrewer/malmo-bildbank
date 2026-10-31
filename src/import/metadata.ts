@@ -12,6 +12,15 @@ export interface Metadata {
   height: number
   orientation: number | null
   gps: Gps | null
+  dpi: number | null
+}
+
+// Upplösningen i punkter per tum ur EXIF, eller null om den saknas.
+// ResolutionUnit 3 betyder per centimeter.
+function dpiOf(tags: Tags): number | null {
+  const resolution = number(tags.XResolution)
+  if (!resolution) return null
+  return tags.ResolutionUnit === 3 || tags.ResolutionUnit === 'cm' ? Math.round(resolution * 2.54) : resolution
 }
 
 // exifr:s resultat har inga typer. Fälten nedan är de som används.
@@ -109,11 +118,12 @@ export async function readMetadata(file: Source, companion?: Source): Promise<Me
     orientation,
     // exifr räknar om EXIF:s grader, minuter och sekunder till latitude och longitude.
     gps: gpsFrom(tags.latitude, tags.longitude),
+    dpi: dpiOf(tags),
   }
 }
 
-// Bara GPS-positionen, för bilder som importerades innan positionen sparades.
-export async function readGps(file: Source, companion?: Source): Promise<Gps | null> {
+// Bara GPS-positionen och upplösningen, för bilder som importerades innan de sparades.
+export async function readGpsAndDpi(file: Source, companion?: Source): Promise<{ gps: Gps | null; dpi: number | null }> {
   const tags = (await parse(file)) ?? (companion ? await parse(companion) : null) ?? {}
-  return gpsFrom(tags.latitude, tags.longitude)
+  return { gps: gpsFrom(tags.latitude, tags.longitude), dpi: dpiOf(tags) }
 }

@@ -4,7 +4,7 @@
 // tröskelvärdet. Beskrivs i docs/index-format.md.
 
 import { readFile, writeFile } from '../fs/folder.ts'
-import defaults from './defaultConfig.json'
+import defaults from './defaultConfig.json' with { type: 'json' }
 import type { Place } from '../catalog/places.ts'
 
 export interface AiTag {

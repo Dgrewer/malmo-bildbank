@@ -72,6 +72,9 @@ export interface ImageRecord {
   // GPS-positionen ur EXIF, eller null om den saknas. Saknas fältet helt
   // (index från före platserna) läser nästa import positionen ur filen.
   gps?: Gps | null
+  // Upplösningen i dpi ur EXIF, eller null om den saknas. Saknas fältet helt
+  // (index från före upplösningen) läser nästa import den ur filen.
+  dpi?: number | null
   // Stadsområde och delområde, uträknade från gps vid varje import. null utan
   // GPS eller utanför Malmö.
   place: Place | null

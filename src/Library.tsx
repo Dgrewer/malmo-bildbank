@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AdminView } from './admin/AdminView.tsx'
 import { OpenImage } from './admin/openImage.ts'
-import { DEFAULT_CONFIG, parseConfig } from './ai/tagConfig.ts'
+import { decodeVectors, type Vectors } from './ai/embeddings.ts'
+import { spreadHandTags } from './ai/handTags.ts'
+import { MODEL } from './ai/modelInfo.ts'
+import { DEFAULT_CONFIG, parseConfig, type BankConfig } from './ai/tagConfig.ts'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
 import { placeParts, placeWithTags, type Place } from './catalog/places.ts'
@@ -19,6 +22,9 @@ interface Catalog {
   tagPlaces: Map<string, Place>
   // Alla användares ändringar i app-data/edits/.
   edits: Edit[]
+  config: BankConfig
+  // Bildernas AI-vektorer, så att taggar som sätts för hand sprids till liknande bilder.
+  vectors: Vectors
   thumbs: FileSystemDirectoryHandle
   previews: FileSystemDirectoryHandle
 }
@@ -46,11 +52,14 @@ async function loadCatalog(root: FileSystemDirectoryHandle): Promise<Catalog> {
       config = { ...DEFAULT_CONFIG, aiTags: [] }
     }
   }
+  const vectorFile = await readFile(root, 'app-data/embeddings.bin')
   return {
     indexed: images,
     vocabulary: buildVocabulary(config),
     tagPlaces: new Map(config.aiTags.filter((tag) => tag.place).map((tag) => [wordKey(tag.tag), tag.place!])),
     edits: await loadEdits(root),
+    config,
+    vectors: (vectorFile && decodeVectors(await vectorFile.arrayBuffer(), MODEL.dimensions)) || new Map(),
     thumbs: await ensureDirectory(root, 'app-data/thumbs'),
     previews: await ensureDirectory(root, 'app-data/previews'),
   }
@@ -90,10 +99,13 @@ export function Library({ root, onChangeFolder }: Props) {
   const edited = useMemo(() => {
     if (!catalog) return null
     const merged = mergeEdits(catalog.edits)
+    // Taggar som någon har satt för hand får också liknande bilder, som AI-taggar.
+    const spread = spreadHandTags(catalog.vectors, merged.tags, catalog.config)
     const tags = new Map<string, ShownTag[]>()
     const images = catalog.indexed.map((indexed) => {
       const image = applyEdits(indexed, merged)
-      const shown = editedTags(shownTags(image, catalog.vocabulary), merged.tags.get(image.id))
+      const aiTags = [...image.aiTags, ...(spread.get(image.id) ?? [])]
+      const shown = editedTags(shownTags({ tags: image.tags, aiTags }, catalog.vocabulary), merged.tags.get(image.id))
       tags.set(image.id, shown)
       // En plats som någon har ändrat går före taggarnas.
       if (merged.fields.get(image.id)?.place !== undefined) return image

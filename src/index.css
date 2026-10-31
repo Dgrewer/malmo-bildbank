@@ -340,14 +340,14 @@ button.primary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .detail-nav {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .detail-nav button {
@@ -430,10 +430,14 @@ button.primary {
   border-radius: 6px;
 }
 
+.detail-fields {
+  font-size: 0.875rem;
+}
+
 .detail-fields dt {
   color: var(--muted);
-  font-size: 0.85rem;
-  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  margin-top: 0.5rem;
 }
 
 .detail-fields dd {

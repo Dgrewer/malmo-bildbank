@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type WheelEvent } from 'react'
-import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
+import { fileFormat, fileName, formatDuration, formatResolution, isVideo } from '../catalog/fileFormat.ts'
 import { CONSENT_TEXT, formatTaken } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import type { Edit } from '../catalog/edits.ts'
@@ -221,6 +221,8 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             <dd>
               <span className="file-format">{fileFormat(image.path)}</span> {fileName(image.path)}
             </dd>
+            <dt>Upplösning</dt>
+            <dd>{formatResolution(image)}</dd>
             {image.durationSeconds !== null && (
               <>
                 <dt>Längd</dt>

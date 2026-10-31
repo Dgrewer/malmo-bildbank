@@ -874,7 +874,7 @@ function TagDetail({
       />
       <WordList
         title="Hör ihop med"
-        explain="Taggar som ska visas tillsammans, t.ex. restaurang och kafé eller butik och affär. Har en bild den ena taggen visas den med alla i gruppen. Det påverkar inte vilka AI-taggar AI:n sätter."
+        explain="Taggar som ska visas tillsammans, t.ex. restaurang och kafé, eller slott och Malmöhus. Har en bild den ena taggen visas den med alla i gruppen. Ett ord som inte är en tagg blir en tagg. Hellre en tagg för mycket än för lite: en felaktig tagg tas bort på bilden."
         words={(vocabulary.groups.get(draft.tag.trim()) ?? []).filter((name) => name !== draft.tag.trim())}
         placeholder="Lägg till tagg"
         list="tag-name-list"
@@ -882,10 +882,12 @@ function TagDetail({
         disabled={disabled}
         check={(word) => {
           const name = vocabulary.byWord.get(wordKey(word))
-          if (!name) return `Det finns ingen tagg som heter ”${word}”.`
-          return name === draft.tag.trim() ? 'Taggen hör alltid ihop med sig själv.' : null
+          if (name !== draft.tag.trim()) return null
+          return wordKey(word) === wordKey(name)
+            ? 'Taggen hör alltid ihop med sig själv.'
+            : `”${word}” står under Andra ord för samma sak. Ta bort det där först.`
         }}
-        onAdd={(word) => onChange({ related: [...(draft.related ?? []), vocabulary.byWord.get(wordKey(word))!] })}
+        onAdd={(word) => onChange({ related: [...(draft.related ?? []), vocabulary.byWord.get(wordKey(word)) ?? word.trim()] })}
         onRemove={onLeaveGroup}
       />
       <TagPlace place={draft.place} disabled={disabled} onChange={(place) => onChange({ place })} />

@@ -23,6 +23,7 @@ import {
   fileFormat,
   fileName,
   formatDuration,
+  formatResolution,
   isSupported,
   isSystemDirectory,
   isSystemFile,
@@ -845,7 +846,8 @@ try {
       const taken = image.takenAt ? formatTaken(image.takenAt) : 'Okänt, filen saknar datum'
       const formats = [image.path, ...image.alternates].map((file) => `${fileFormat(file)} ${fileName(file)}`)
       if (image.durationSeconds !== null) formats.push(formatDuration(image.durationSeconds))
-      for (const value of [image.id, image.photographer, image.byline, image.terms, taken, ...formats]) {
+      const resolution = formatResolution(image)
+      for (const value of [image.id, image.photographer, image.byline, image.terms, taken, resolution, ...formats]) {
         assert(detail.text.includes(value), `Detaljvyn saknar "${value}"`)
       }
       assert(!/Rättighet/.test(detail.text), 'Detaljvyn visar rättighetsdatum')
@@ -1441,6 +1443,40 @@ try {
     assert(!near.exact && near.near.includes('Turning Torso'), `Turnig Torso föreslår ${JSON.stringify(near)}`)
     assert(suggestTags('kafe', vocabulary).near.includes('kafé'), 'kafe föreslår inte kafé')
     assert(!suggestTags('Malmöhus', vocabulary).exact, 'Malmöhus får inte vara en annan tagg')
+
+    // Ett ord under Hör ihop med som inte är en tagg blir en tagg i gruppen, åt båda hållen.
+    const castle = { tag: 'slott', prompt: 'a photo of a castle', threshold: 0.05, related: ['Malmöhus', 'Malmö museum'] }
+    const withCastle = buildVocabulary({ ...defaults, aiTags: [...defaults.aiTags.filter((tag: { tag: string }) => tag.tag !== 'slott'), castle] })
+    const fromCastle = shownTags({ tags: [], aiTags: ['slott'] }, withCastle).map((tag) => tag.tag)
+    assert(['slott', 'Malmöhus', 'Malmö museum'].every((tag) => fromCastle.includes(tag)), `slott ger ${fromCastle}`)
+    const fromWord = shownTags({ tags: ['malmöhus'], aiTags: [] }, withCastle).map((tag) => tag.tag)
+    assert(fromWord.includes('slott') && fromWord.includes('Malmöhus'), `Nyckelordet malmöhus ger ${fromWord}`)
+
+    // En tagg som sätts för hand sprids till liknande bilder, men inte till bilder
+    // där någon har tagit bort den, eller nästan likadana bilder.
+    const { spreadHandTags, HAND_THRESHOLD } = await import('../src/ai/handTags.ts')
+    const unit = (...values: number[]) => {
+      const vector = Float32Array.from(values)
+      const length = Math.hypot(...vector)
+      return vector.map((value) => value / length)
+    }
+    const offset = Math.sqrt(1 - HAND_THRESHOLD ** 2) * 0.9
+    const vectors = new Map([
+      ['MB-1', unit(1, 0, 0)],
+      ['MB-2', unit(1, offset, 0)],
+      ['MB-3', unit(0, 1, 0)],
+      ['MB-4', unit(1, 0, 0.1)],
+      ['MB-5', unit(1, 0, 0.12)],
+    ])
+    const edits = new Map([
+      ['MB-1', new Map([['öresund', { tag: 'Öresund', on: true }]])],
+      ['MB-4', new Map([['öresund', { tag: 'Öresund', on: false }]])],
+    ])
+    const spread = spreadHandTags(vectors, edits, { version: 1, atLeastOneTag: false, aiTags: [] })
+    assert(
+      JSON.stringify([...spread]) === JSON.stringify([['MB-2', ['Öresund']]]),
+      `Öresund spreds till ${JSON.stringify([...spread])}`,
+    )
   })
 
   await test('4.5 Samma bild, olika namn listas i Admin', async () => {
@@ -1796,12 +1832,12 @@ try {
 
   await test('4.2 metadata läses ur EXIF, IPTC och XMP', async () => {
     // Storleken kommer från den avkodade bilden och kontrolleras i 4.3.
-    const fields = ['byline', 'takenAt', 'tags', 'description', 'durationSeconds'] as const
+    const fields = ['byline', 'takenAt', 'tags', 'description', 'durationSeconds', 'dpi'] as const
     const differences: string[] = []
     for (const wanted of expected.kept) {
       const actual = firstIndex!.images.find((image) => image.path === wanted.path)
       for (const field of fields) {
-        if (JSON.stringify(actual?.[field]) !== JSON.stringify(wanted[field])) {
+        if (JSON.stringify(actual?.[field] ?? null) !== JSON.stringify(wanted[field] ?? null)) {
           differences.push(`${wanted.path} ${field}: ${JSON.stringify(actual?.[field])}, väntade ${JSON.stringify(wanted[field])}`)
         }
       }
@@ -1811,6 +1847,7 @@ try {
     assert(!/Ã|Â/.test(texts), 'Felkodade tecken finns kvar')
     assert(firstIndex!.images.some((image) => image.tags.length), 'Ingen bild fick nyckelord')
     assert(firstIndex!.images.some((image) => image.description), 'Ingen bild fick bildtext')
+    assert(firstIndex!.images.some((image) => image.dpi), 'Ingen bild fick dpi')
   })
 
   await test('4.6 platsen räknas ut från GPS mot Malmös områden', async () => {

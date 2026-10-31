@@ -43,7 +43,7 @@ import {
 } from './images.ts'
 import { recoverIndexFiles, writeIndexFile } from './indexFiles.ts'
 import { Journal, readJournal } from './journal.ts'
-import { readGps, readMetadata } from './metadata.ts'
+import { readGpsAndDpi, readMetadata } from './metadata.ts'
 import { placeAt, type Gps } from '../catalog/places.ts'
 import AREAS from '../places/malmo-areas.json'
 import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
@@ -336,12 +336,12 @@ async function metadataSource(file: File): Promise<File | Uint8Array> {
   return RAW_EXTENSIONS.has(ext) || TIFF_EXTENSIONS.has(ext) ? new Uint8Array(await file.arrayBuffer()) : file
 }
 
-// GPS-positionen för en oförändrad bild som importerades innan positionen sparades.
-async function gpsOf(item: PlanItem<HashedScannedFile>): Promise<Gps | null> {
+// GPS-positionen och upplösningen för en oförändrad bild som importerades innan de sparades.
+async function gpsAndDpiOf(item: PlanItem<HashedScannedFile>): Promise<{ gps: Gps | null; dpi: number | null }> {
   const file = await item.file.handle.getFile()
-  if (isVideo(file.name)) return null
+  if (isVideo(file.name)) return { gps: null, dpi: null }
   const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
-  return readGps(await metadataSource(file), companion)
+  return readGpsAndDpi(await metadataSource(file), companion)
 }
 
 // Metadata läses och bilder skapas för nya och ändrade filer. En flyttad fil
@@ -353,7 +353,7 @@ async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): 
   const file = await item.file.handle.getFile()
   if (isVideo(file.name)) {
     const video = await readVideoInfo(file)
-    const updated = { ...record, byline: record.byline || `Foto: ${record.photographer}`, gps: null, ...video }
+    const updated = { ...record, byline: record.byline || `Foto: ${record.photographer}`, gps: null, dpi: null, ...video }
     return withImages(current, updated, () => videoFrame(file))
   }
   const companion = item.file.alternates[0] && (await item.file.alternates[0].handle.getFile())
@@ -365,6 +365,7 @@ async function makeRecord(current: Session, item: PlanItem<HashedScannedFile>): 
     tags: metadata.tags,
     description: metadata.description,
     gps: metadata.gps,
+    dpi: metadata.dpi,
   }
   return withImages(current, updated, () => decodeImage(file, metadata.orientation, companion))
 }
@@ -557,10 +558,12 @@ async function moveDuplicates(current: Session, dropped: Map<ImageRecord, ImageR
 async function runImport(current: Session, copy: boolean) {
   const { bank, plan, journal } = current
   const work = plan.items.filter((item) => item.change !== 'unchanged')
-  // Bilder från före platserna saknar GPS-positionen. Den läses ur filen en gång,
-  // även för flyttade filer, som annars behåller sina uppgifter.
+  // Bilder från före platserna eller upplösningen saknar GPS-positionen eller dpi.
+  // De läses ur filen en gång, även för flyttade filer, som annars behåller sina uppgifter.
   const withoutGps = plan.items.filter(
-    (item) => (item.change === 'unchanged' || item.change === 'moved') && item.previous?.gps === undefined,
+    (item) =>
+      (item.change === 'unchanged' || item.change === 'moved') &&
+      (item.previous?.gps === undefined || item.previous?.dpi === undefined),
   )
   const total = work.length + withoutGps.length
   const records = new Map<string, ImageRecord>()
@@ -576,17 +579,17 @@ async function runImport(current: Session, copy: boolean) {
     await journal.flush()
     throw error
   }
-  const gps = new Map<string, Gps | null>()
+  const gps = new Map<string, { gps: Gps | null; dpi: number | null }>()
   for (const item of withoutGps) {
     await breathe()
     progress('import', records.size + gps.size, total)
-    gps.set(item.id, await gpsOf(item))
+    gps.set(item.id, await gpsAndDpiOf(item))
   }
   progress('import', total, total)
 
   // Platsen räknas ut för alla bilder, så att ändrade områden slår igenom.
   const all = plan.items
-    .map((item) => ({ ...(records.get(item.id) ?? baseRecord(item)), ...(gps.has(item.id) && { gps: gps.get(item.id) }) }))
+    .map((item) => ({ ...(records.get(item.id) ?? baseRecord(item)), ...gps.get(item.id) }))
     .map((record) => ({ ...record, place: placeAt(record.gps, AREAS) }))
     .sort((a, b) => idNumber(a.id) - idNumber(b.id))
   // Av filer med samma namn och tagningstid behålls den med högst upplösning.
