@@ -2327,6 +2327,294 @@ try {
       await page.close()
     }
   })
+
+  // Sparar en inställning i appens IndexedDB, t.ex. användarens namn. undefined tar bort den.
+  async function setSetting(page: Page, key: string, value: unknown) {
+    await page.evaluate(
+      (key, value) =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open('malmo-bildbank', 1)
+          open.onupgradeneeded = () => open.result.createObjectStore('settings')
+          open.onerror = () => reject(open.error)
+          open.onsuccess = () => {
+            const transaction = open.result.transaction('settings', 'readwrite')
+            const store = transaction.objectStore('settings')
+            if (value === undefined) store.delete(key)
+            else store.put(value, key)
+            transaction.oncomplete = () => (open.result.close(), resolve())
+            transaction.onerror = () => reject(transaction.error)
+          }
+        }),
+      key,
+      value as never,
+    )
+  }
+
+  // Mappväljaren går inte att automatisera. Den ger tillbaka mappen name i OPFS.
+  async function pickOpfsFolder(page: Page, name: string) {
+    await page.evaluate(async (name) => {
+      const opfs = await navigator.storage.getDirectory()
+      await opfs.removeEntry(name, { recursive: true }).catch(() => {})
+      const folder = await opfs.getDirectoryHandle(name, { create: true })
+      ;(window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker = async () => folder
+    }, name)
+  }
+
+  async function opfsNames(page: Page, folder: string): Promise<string[]> {
+    return page.evaluate(async (folder) => {
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(folder)
+      const names: string[] = []
+      for await (const name of directory.keys()) names.push(name)
+      return names.sort()
+    }, folder)
+  }
+
+  const testIndex = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8')) as IndexFile
+
+  await test('5.2 liknande bilder i detaljvyn', async () => {
+    const { similarTo } = await import('../src/catalog/search.ts')
+    const vectors = decodeVectors(toArrayBuffer(await fs.readFile('testdata/app-data/embeddings.bin')), MODEL.dimensions)!
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      // Den första bilden med liknande bilder.
+      const index = testIndex.images.findIndex((image) => similarTo(image.id, vectors).length > 0)
+      const image = testIndex.images[index]
+      const expected = similarTo(image.id, vectors)
+      await page.locator(`.gallery-cell[data-index="${index}"]`).click()
+      await page.waitForSelector('dialog.detail[open] .detail-similar .similar-thumb', { timeout: 10_000 })
+      const shown = await page.$$eval('.detail-similar .similar-thumb', (items) => items.map((item) => item.getAttribute('aria-label')))
+      assert(
+        JSON.stringify(shown) === JSON.stringify(expected.slice(0, 8).map((id) => `Öppna ${id}`)),
+        `Liknande bilder: ${shown}, väntade ${expected.slice(0, 8)}`,
+      )
+      await page.click('.detail-similar .similar-thumb')
+      await waitForText(page, `Bilder som liknar ${image.id} · ${expected.length + 1} bilder`)
+      await page.waitForFunction((id) => document.querySelector('#detail-title')?.textContent === id, { timeout: 5_000 }, expected[0])
+      // Bilder utan liknande bilder säger det.
+      const lonely = testIndex.images.find((other) => vectors.has(other.id) && !similarTo(other.id, vectors).length)
+      if (lonely) assert(similarTo(lonely.id, vectors).length === 0, 'Väntade en bild utan liknande')
+    } finally {
+      await page.close()
+    }
+  })
+
+  await test('5.4 ändringshistorik, ångra och kollegornas ändringar varje minut', async () => {
+    const page = await openPage('/?testdata&edits=500')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await setSetting(page, 'user', 'Testare')
+      const image = testIndex.images.find((other) => !other.blocked && !other.previewProblem)!
+      const position = testIndex.images.indexOf(image)
+      // En kollega spärrar bilden. Appen läser in det utan att sidan laddas om.
+      const colleague = { at: new Date().toISOString(), by: 'Kollega', id: image.id, field: 'blocked', value: true }
+      await writeOpfs(page, 'testdata/app-data/edits/Kollega.jsonl', JSON.stringify(colleague) + '\n')
+      await step(
+        'Spärren från kollegan',
+        page.waitForSelector(`.gallery-cell[data-index="${position}"].is-blocked`, { timeout: 10_000 }),
+      )
+      await page.locator(`.gallery-cell[data-index="${position}"]`).click()
+      await page.waitForSelector('dialog.detail[open] .history', { timeout: 5_000 })
+      await page.click('.history summary')
+      const history = await page.$eval('.history', (element) => (element as HTMLElement).innerText)
+      assert(history.includes('Kollega') && history.includes('Spärr: Spärrad'), `Historiken: ${history}`)
+      assert(await page.$('dialog.detail[open] .blocked-banner'), 'Detaljvyn visar inte spärren')
+      assert(!(await page.$('dialog.detail[open] .download-row button.primary')), 'En spärrad bild går att ladda ner')
+      await elementScreenshot(page, '.history', '5.4-historik')
+      await page.click('.history button.link')
+      await page.waitForFunction(() => !document.querySelector('dialog.detail[open] .blocked-banner'), { timeout: 5_000 })
+      const own = await readOpfs(page, 'testdata/app-data/edits/Testare.jsonl')
+      const undo = JSON.parse(own!.trim().split('\n').at(-1)!)
+      assert(undo.by === 'Testare' && undo.field === 'blocked' && undo.value === false, `Ångra skrev ${own}`)
+      assert((await readOpfs(page, 'testdata/app-data/edits/Kollega.jsonl'))!.trim() === JSON.stringify(colleague), 'Kollegans fil ändrades')
+
+      // Loggen i Admin visar båda ändringarna.
+      await page.keyboard.press('Escape')
+      await clickButton(page, 'Admin')
+      await clickButton(page, 'Logg')
+      await page.waitForSelector('.log-list', { timeout: 10_000 })
+      const log = await page.$eval('.log-list', (element) => (element as HTMLElement).innerText)
+      assert(log.includes('Kollega') && log.includes('Testare') && log.includes(`${image.id}: Spärr: Inte spärrad`), `Loggen: ${log.slice(0, 400)}`)
+    } finally {
+      await page.close()
+    }
+  })
+
+  await test('5.3 Admin, AI-taggar listar taggar satta för hand och gör dem till AI-taggar', async () => {
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await clickButton(page, 'Admin')
+      await clickButton(page, 'AI-taggar')
+      await page.waitForSelector('.hand-tags button', { timeout: 30_000 })
+      const names = await page.$$eval('.hand-tags button', (buttons) => buttons.map((button) => (button as HTMLElement).innerText))
+      assert(names.some((name) => name.startsWith('Öresund')), `Taggar satta för hand: ${names}`)
+      await page.locator('.hand-tags button::-p-text(Öresund)').click()
+      await page.waitForFunction(() => !document.querySelector('.hand-tags')?.textContent?.includes('Öresund'), { timeout: 5_000 })
+      await waitForText(page, '1 osparad ändring')
+      await elementScreenshot(page, '.tag-sidebar', '5.3-handtaggar')
+    } finally {
+      await page.close()
+    }
+  })
+
+  await test('5.5 nedladdning till Hämtade bilder, korgen och delade länkar', async () => {
+    const { downloadName } = await import('../src/download/download.ts')
+    assert(downloadName('MB-000022', 'original/A/IMG_0012.CR2') === 'MB-000022_IMG_0012.CR2', 'Fel filnamn')
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await setSetting(page, 'basket', undefined)
+      await setSetting(page, 'downloads', undefined)
+      // Originalen kopieras inte till testbanken. Två små filer får stå för dem.
+      const usable = testIndex.images.filter((image) => !image.blocked && !image.alternates.length && !image.previewProblem)
+      const [first, second] = usable
+      for (const image of [first, second]) {
+        await writeOpfs(page, `testdata/Original/${image.path.split('/').slice(1).join('/')}`, `original ${image.id}`)
+      }
+      await pickOpfsFolder(page, 'hamtade')
+      const position = testIndex.images.indexOf(first)
+      const name = downloadName(first.id, first.path)
+
+      // Ladda ner-ikonen syns bara när musen är över bilden.
+      const action = `.gallery-slot:has(.gallery-cell[data-index="${position}"]) .cell-action.download`
+      const opacity = () => page.$eval(action, (element) => getComputedStyle(element).opacity)
+      assert((await opacity()) === '0', 'Ladda ner-ikonen syns utan mus')
+      await page.hover(`.gallery-cell[data-index="${position}"]`)
+      await page.waitForFunction((selector) => getComputedStyle(document.querySelector(selector)!).opacity === '1', { timeout: 5_000 }, action)
+      await page.click(action)
+      await waitForText(page, '1 fil hämtades till hamtade.')
+      assert((await readOpfs(page, `hamtade/${name}`)) === `original ${first.id}`, 'Filen är inte originalet')
+      await page.click('.toast button')
+
+      // Andra gången hämtas inget. En raderad fil hämtas igen.
+      await page.locator(`.gallery-cell[data-index="${position}"]`).click()
+      await clickButton(page, 'Ladda ner')
+      await waitForText(page, `${name} finns redan i hamtade.`)
+      await page.evaluate(async (name) => (await (await navigator.storage.getDirectory()).getDirectoryHandle('hamtade')).removeEntry(name), name)
+      await clickButton(page, 'Ladda ner')
+      await waitForText(page, '1 fil hämtades till hamtade.')
+      await elementScreenshot(page, '.detail-download', '5.5-detaljvy')
+
+      // En spärrad bild har ingen Ladda ner och inga ikoner i rutnätet.
+      const blocked = testIndex.images.findIndex((image) => image.blocked)
+      if (blocked >= 0) assert(!(await page.$(`.gallery-slot:has(.gallery-cell[data-index="${blocked}"]) .cell-action`)), 'En spärrad bild har ikoner')
+
+      // Korgen: Lägg i korgen i detaljvyn, och dra en bild dit från rutnätet.
+      await clickButton(page, 'Lägg i korgen')
+      await waitForText(page, 'Finns i korgen')
+      await page.keyboard.press('Escape')
+      await page.evaluate((id) => {
+        const data = new DataTransfer()
+        data.setData('application/x-bildbank-id', id)
+        document.querySelector('.basket')!.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }))
+      }, second.id)
+      await page.waitForFunction(() => document.querySelectorAll('.basket-item').length === 2, { timeout: 5_000 })
+      // Skärmbilderna visar bara knapparna, inte fotona.
+      await page.addStyleTag({ content: 'img { visibility: hidden !important }' })
+      await page.hover('.basket-item')
+      await elementScreenshot(page, '.basket', '5.5-korg')
+      await page.hover(`.gallery-cell[data-index="${position}"]`)
+      await elementScreenshot(page, `.gallery-slot:has(.gallery-cell[data-index="${position}"])`, '5.5-ikoner')
+      await page.evaluate(async (name) => (await (await navigator.storage.getDirectory()).getDirectoryHandle('hamtade')).removeEntry(name), name)
+      await page.click('.basket [aria-label="Ladda ner alla"]')
+      await waitForText(page, '2 filer hämtades till hamtade.')
+      assert(
+        JSON.stringify(await opfsNames(page, 'hamtade')) === JSON.stringify([name, downloadName(second.id, second.path)].sort()),
+        `Hämtade bilder: ${await opfsNames(page, 'hamtade')}`,
+      )
+      await page.click('.basket [aria-label="Dela korgen"]')
+      await waitForText(page, 'Länken till 2 bilder är kopierad').catch(() => waitForText(page, `#bilder=${first.id},${second.id}`))
+
+      // Korgen finns kvar efter omladdning, och krysset tar bort en bild.
+      await page.goto(`${ORIGIN}/?testdata&keep`)
+      await page.waitForFunction(() => document.querySelectorAll('.basket-item').length === 2, { timeout: 30_000 })
+      await page.hover('.basket-item')
+      await page.click('.basket-item .basket-remove')
+      await page.waitForFunction(() => document.querySelectorAll('.basket-item').length === 1, { timeout: 5_000 })
+
+      // En delad länk visar bilderna.
+      await page.goto(`${ORIGIN}/?testdata&keep#bilder=${first.id},${second.id}`)
+      await waitForText(page, 'Delade bilder · 2 bilder', 30_000)
+      await clickButton(page, 'Visa alla bilder')
+      assert(!(await page.evaluate(() => location.hash)), 'Länken ligger kvar efter Visa alla bilder')
+    } finally {
+      await page.close()
+    }
+  })
+
+  await test('5.6 Kopiera sökväg med bildbankens sökväg på den här datorn', async () => {
+    const { localFilePath } = await import('../src/download/localPath.ts')
+    assert(localFilePath('C:\\Bildbank\\', 'original/A/b.jpg') === 'C:\\Bildbank\\original\\A\\b.jpg', 'Windows-sökvägen blev fel')
+    assert(localFilePath('/Users/x/Bildbank', 'original/A/å.jpg') === '/Users/x/Bildbank/original/A/å.jpg', 'Mac-sökvägen blev fel')
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await setSetting(page, 'localPath', undefined)
+      await clickButton(page, 'Admin')
+      await clickButton(page, 'Den här datorn')
+      await page.type('.local-path input', 'C:\\Bildbank')
+      await clickButton(page, 'Spara')
+      await waitForText(page, 'Sparat.')
+      await clickButton(page, 'Tillbaka till bildbanken')
+      await page.locator('.gallery-cell[data-index="0"]').click()
+      await clickButton(page, 'Kopiera sökväg')
+      const expected = localFilePath('C:\\Bildbank', testIndex.images[0].path)
+      await waitForText(page, expected)
+    } finally {
+      await page.close()
+    }
+  })
+
+  await test('5.7 ändringar och mappens rättigheter bakas in i indexet', async () => {
+    const { applyEdits, mergeEdits, parseEdit } = await import('../src/catalog/edits.ts')
+    const { bakeEdits, unbake } = await import('../src/catalog/bake.ts')
+    const image = { ...(await testRecord('MB-000001', 'original/Fotograf A/a.jpg', 'Fotograf A')), tags: ['hav'], aiTags: ['bro'] }
+    const other = await testRecord('MB-000002', 'original/Fotograf A/b.jpg', 'Fotograf A')
+    const lines = [
+      { at: '2026-01-01', by: 'A', id: 'original/Fotograf A/', field: 'terms', value: 'Mappens villkor' },
+      { at: '2026-01-01', by: 'A', id: 'original/Fotograf A/', field: 'blocked', value: true },
+      { at: '2026-01-02', by: 'B', id: 'MB-000001', field: 'blocked', value: false },
+      { at: '2026-01-02', by: 'B', id: 'MB-000001', tag: 'bro', on: false },
+      { at: '2026-01-02', by: 'B', id: 'MB-000001', tag: 'segelbåt', on: true },
+      // Mappar kan bara få villkor, samtycke och spärr.
+      { at: '2026-01-02', by: 'B', id: 'original/Fotograf A/', field: 'byline', value: 'x' },
+    ]
+    const edits = mergeEdits(lines.flatMap((line) => parseEdit(JSON.stringify(line)) ?? []))
+    const own = applyEdits(image, edits)
+    assert(own.terms === 'Mappens villkor' && own.blocked === false && own.byline === '', `Bilden: ${JSON.stringify(own)}`)
+    assert(applyEdits(other, edits).blocked === true, 'Mappens spärr gäller inte den andra bilden')
+    const baked = bakeEdits(image, edits)
+    assert(JSON.stringify(baked.tags) === '["hav","segelbåt"]' && !baked.aiTags.length, `Taggarna: ${baked.tags} / ${baked.aiTags}`)
+    assert(baked.terms === 'Mappens villkor' && baked.unedited?.terms === '', `Inbakat: ${JSON.stringify(baked)}`)
+    assert(JSON.stringify(unbake(baked)) === JSON.stringify(image), 'unbake ger inte tillbaka bilden')
+    assert(JSON.stringify(bakeEdits(baked, edits)) === JSON.stringify(baked), 'En andra inbakning ändrar bilden')
+    // En mapps inställning tas bort med null.
+    const cleared = mergeEdits([...lines, { at: '2026-01-03', by: 'A', id: 'original/Fotograf A/', field: 'blocked', value: null }].flatMap((line) => parseEdit(JSON.stringify(line)) ?? []))
+    assert(applyEdits(other, cleared).blocked === false, 'Mappens spärr gick inte att ta bort')
+
+    // Admin, Rättigheter: spärra en hel mapp i ett svep.
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      await setSetting(page, 'user', 'Testare')
+      await clickButton(page, 'Admin')
+      await clickButton(page, 'Rättigheter')
+      const form = 'form.folder-form[aria-label="Fotograf C"]'
+      await page.waitForSelector(form, { timeout: 10_000 })
+      await page.select(`${form} label:nth-of-type(3) select`, 'true')
+      await elementScreenshot(page, form, '5.7-mapprattigheter')
+      await page.click(`${form} button[type="submit"]`)
+      await page.waitForFunction((form) => document.querySelector(`${form} [role="status"]`)?.textContent === 'Sparat.', { timeout: 5_000 }, form)
+      await clickButton(page, 'Tillbaka till bildbanken')
+      await page.select('select[aria-label="Fotograf"]', 'Fotograf C')
+      await page.select('select[aria-label="Rättigheter"]', 'blocked')
+      const inC = testIndex.images.filter((image) => image.photographer === 'Fotograf C').length
+      await page.waitForFunction((text) => document.querySelector('.filter-bar')?.textContent?.startsWith(text), { timeout: 5_000 }, `${inC} ${inC === 1 ? 'bild' : 'bilder'}`)
+    } finally {
+      await page.close()
+    }
+  })
 } finally {
   await browser.close()
   await server.close()

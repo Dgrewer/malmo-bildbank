@@ -15,7 +15,11 @@ import { DetailView } from './detail/DetailView.tsx'
 import { Gallery } from './gallery/Gallery.tsx'
 import { SearchBar, type FilterOptions } from './gallery/SearchBar.tsx'
 import { ModelMissingError, textEmbeddings } from './ai/model.ts'
-import { aiMatches, matchesFilters, NO_FILTERS, textMatches, year, type Filters } from './catalog/search.ts'
+import { aiMatches, matchesFilters, NO_FILTERS, similarTo, textMatches, year, type Filters } from './catalog/search.ts'
+import { Basket } from './download/Basket.tsx'
+import { downloadFolder, downloadImages, resultText } from './download/download.ts'
+import { clearSharedIds, copyShareLink, sharedIds } from './download/share.ts'
+import { loadBasket, saveBasket } from './fs/folderStore.ts'
 
 // Väntetiden i millisekunder efter sista tangenttrycket innan AI-söket körs.
 const AI_DELAY = 400
@@ -54,11 +58,32 @@ interface Catalog {
   previews: FileSystemDirectoryHandle
 }
 
-// Det som galleriet visar bilder med: en tagg, eller ett stadsområde eller delområde.
+// Det som galleriet visar bilder med: en tagg, ett stadsområde eller delområde,
+// bilder som liknar en bild (value är bildens id), bilder från en delad länk
+// eller bilderna i korgen. ids är bilderna i den ordning de visas.
 interface Filter {
-  kind: 'tag' | 'place'
+  kind: 'tag' | 'place' | 'similar' | 'shared' | 'basket'
   value: string
+  ids?: string[]
 }
+
+const FILTER_TEXT: Record<Filter['kind'], string> = {
+  tag: 'Bilder med taggen',
+  place: 'Bilder från',
+  similar: 'Bilder som liknar',
+  shared: 'Delade bilder',
+  basket: 'Bilderna i korgen',
+}
+
+// Hur ofta kollegornas ändringar i app-data/edits/ läses in, i millisekunder.
+const EDITS_INTERVAL = 60_000
+
+// Ändras när någon ändring har lagts till, oavsett ordning.
+const editsSignature = (edits: Edit[]) =>
+  edits
+    .map((edit) => `${edit.at}|${edit.by}|${edit.id}`)
+    .sort()
+    .join('\n')
 
 type State = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; catalog: Catalog }
 
@@ -98,8 +123,17 @@ interface Props {
 export function Library({ root, onChangeFolder }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' })
   const [selected, setSelected] = useState<number | null>(null)
-  // Taggen eller platsen som galleriet visar bilder med, eller null för alla bilder.
-  const [filter, setFilter] = useState<Filter | null>(null)
+  // Taggen eller platsen som galleriet visar bilder med, eller null för alla
+  // bilder. Öppnades appen med en delad länk visas de bilderna.
+  const [filter, setFilter] = useState<Filter | null>(() => {
+    const ids = sharedIds()
+    return ids ? { kind: 'shared', value: '', ids } : null
+  })
+  const [basket, setBasket] = useState<string[]>([])
+  const [basketMessage, setBasketMessage] = useState<string | null>(null)
+  const [basketBusy, setBasketBusy] = useState(false)
+  // Kort meddelande efter Ladda ner eller Dela i rutnätet.
+  const [toast, setToast] = useState<string | null>(null)
   const [admin, setAdmin] = useState(false)
   // Bilden som är öppen ovanpå Admin, och bilderna man kan bläddra mellan där.
   const [adminImage, setAdminImage] = useState<{ ids: string[]; position: number } | null>(null)
@@ -124,6 +158,53 @@ export function Library({ root, onChangeFolder }: Props) {
   }, [root, version])
 
   const catalog = state.kind === 'ready' ? state.catalog : null
+  const loaded = !!catalog
+
+  // Kollegornas ändringar läses in varje minut.
+  useEffect(() => {
+    if (!loaded) return
+    const interval = (import.meta.env.DEV && window.__bildbankEditsInterval) || EDITS_INTERVAL
+    const timer = setInterval(async () => {
+      const edits = await loadEdits(root).catch(() => null)
+      if (!edits) return
+      setState((current) =>
+        current.kind === 'ready' && editsSignature(current.catalog.edits) !== editsSignature(edits)
+          ? { kind: 'ready', catalog: { ...current.catalog, edits } }
+          : current,
+      )
+    }, interval)
+    return () => clearInterval(timer)
+  }, [root, loaded])
+
+  // En delad länk som öppnas medan appen redan är öppen i fliken.
+  useEffect(() => {
+    const listener = () => {
+      const ids = sharedIds()
+      if (!ids) return
+      setText('')
+      setFilters(NO_FILTERS)
+      setFilter({ kind: 'shared', value: '', ids })
+      setSelected(null)
+    }
+    window.addEventListener('hashchange', listener)
+    return () => window.removeEventListener('hashchange', listener)
+  }, [])
+
+  // Korgen sparas bara på den här datorn.
+  useEffect(() => {
+    loadBasket().then(setBasket, () => setBasket([]))
+  }, [])
+  function changeBasket(next: string[]) {
+    setBasket(next)
+    setBasketMessage(null)
+    saveBasket(next).catch(() => {})
+  }
+
+  useEffect(() => {
+    if (!toast) return
+    const timer = setTimeout(() => setToast(null), 8_000)
+    return () => clearTimeout(timer)
+  }, [toast])
   // Bilderna och deras taggar efter användarnas ändringar.
   const edited = useMemo(() => {
     if (!catalog) return null
@@ -172,14 +253,16 @@ export function Library({ root, onChangeFolder }: Props) {
   const result = useMemo(() => {
     if (!edited) return { images: [], exact: 0, ai: 0 }
     const key = filter && wordKey(filter.value)
-    const items = edited.images
-      .filter(
-        (image) =>
-          !filter ||
-          (filter.kind === 'place'
-            ? image.place && placeParts(image.place).includes(filter.value)
-            : edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key)),
-      )
+    const chosen = filter?.ids
+      ? filter.ids.flatMap((id) => byId.get(id) ?? [])
+      : edited.images.filter(
+          (image) =>
+            !filter ||
+            (filter.kind === 'place'
+              ? image.place && placeParts(image.place).includes(filter.value)
+              : edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key)),
+        )
+    const items = chosen
       .filter((image) => matchesFilters(image, filters))
       .map((image) => ({ image, tags: edited.tags.get(image.id)! }))
     if (!query) return { images: items.map((item) => item.image), exact: 0, ai: 0 }
@@ -188,9 +271,36 @@ export function Library({ root, onChangeFolder }: Props) {
     const allowed = new Map(items.map((item) => [item.image.id, item.image]))
     const fromAi = ai?.text === query ? ai.ids.flatMap((id) => (allowed.has(id) && !found.has(id) ? [allowed.get(id)!] : [])) : []
     return { images: [...exact, ...fromAi], exact: exact.length, ai: fromAi.length }
-  }, [edited, catalog, filter, filters, query, ai])
+  }, [edited, byId, catalog, filter, filters, query, ai])
   const shown = result.images
   const aiPending = !!query && !!catalog?.vectors.size && ai?.text !== query
+
+  const current = selected !== null ? shown[selected] : undefined
+  const similar = useMemo(
+    () => (current && catalog ? similarTo(current.id, catalog.vectors).flatMap((id) => byId.get(id) ?? []) : []),
+    [current?.id, catalog, byId],
+  )
+  const indexedById = useMemo(() => new Map((catalog?.indexed ?? []).map((image) => [image.id, image])), [catalog])
+
+  // Visar bilderna i ids i galleriet, utan sökning och filter, och öppnar open.
+  function showIds(kind: Filter['kind'], value: string, ids: string[], open: string | null) {
+    setText('')
+    setFilters(NO_FILTERS)
+    setFilter({ kind, value, ids })
+    const position = open ? ids.filter((id) => byId.has(id)).indexOf(open) : -1
+    setSelected(position >= 0 ? position : null)
+  }
+
+  async function download(images: ImageRecord[], report: (text: string) => void) {
+    try {
+      const folder = await downloadFolder()
+      if (folder) report(resultText(await downloadImages(root, folder, images), folder.name))
+    } catch (problem) {
+      report(`Det gick inte att ladda ner: ${problem instanceof Error ? problem.message : problem}`)
+    }
+  }
+
+  const basketImages = basket.flatMap((id) => byId.get(id) ?? [])
 
   // Sparar ändringar i användarens egen fil och visar dem direkt.
   async function saveEdits(user: string, edits: Edit[]) {
@@ -232,6 +342,9 @@ export function Library({ root, onChangeFolder }: Props) {
         <OpenImage.Provider value={(id, ids) => setAdminImage({ ids, position: ids.indexOf(id) })}>
           <AdminView
             bank={root}
+            images={catalog?.indexed ?? []}
+            edits={catalog?.edits ?? []}
+            onSaveEdits={saveEdits}
             onSaved={reloadTags}
             onClose={(changed) => {
               setAdmin(false)
@@ -255,7 +368,14 @@ export function Library({ root, onChangeFolder }: Props) {
           <span>
             {filter && (
               <>
-                {filter.kind === 'tag' ? 'Bilder med taggen' : 'Bilder från'} <strong className="filter-tag">{filter.value}</strong> ·{' '}
+                {FILTER_TEXT[filter.kind]}
+                {filter.value && (
+                  <>
+                    {' '}
+                    <strong className="filter-tag">{filter.value}</strong>
+                  </>
+                )}{' '}
+                ·{' '}
               </>
             )}
             {count(shown.length)}
@@ -265,7 +385,13 @@ export function Library({ root, onChangeFolder }: Props) {
             {query && !aiPending && ai?.problem && ` · AI-söket fungerar inte: ${ai.problem}`}
           </span>
           {filter && (
-            <button type="button" onClick={() => setFilter(null)}>
+            <button
+              type="button"
+              onClick={() => {
+                clearSharedIds()
+                setFilter(null)
+              }}
+            >
               Visa alla bilder
             </button>
           )}
@@ -273,21 +399,58 @@ export function Library({ root, onChangeFolder }: Props) {
       )}
       {!admin && catalog && (
         <Gallery
-          key={`${filter?.kind}:${filter?.value}:${query}:${JSON.stringify(filters)}`}
+          key={`${filter?.kind}:${filter?.value}:${filter?.ids?.join()}:${query}:${JSON.stringify(filters)}`}
           images={shown}
           thumbs={catalog.thumbs}
           onOpen={setSelected}
+          onDownload={(image) => download([image], setToast)}
+          onShare={async (image) => setToast(await copyShareLink([image.id]))}
         />
       )}
-      {catalog && selected !== null && shown[selected] && (
+      {!admin && catalog && (
+        <Basket
+          images={basketImages}
+          thumbs={catalog.thumbs}
+          message={basketMessage}
+          busy={basketBusy}
+          onAdd={(id) => !basket.includes(id) && byId.has(id) && changeBasket([...basket, id])}
+          onRemove={(id) => changeBasket(basket.filter((other) => other !== id))}
+          onOpen={(id) => showIds('basket', '', basket, id)}
+          onDownload={async () => {
+            setBasketBusy(true)
+            await download(basketImages, setBasketMessage)
+            setBasketBusy(false)
+          }}
+          onShare={async () => {
+            const ids = basketImages.filter((image) => !image.blocked).map((image) => image.id)
+            setBasketMessage(ids.length ? await copyShareLink(ids) : 'Spärrade bilder går inte att dela.')
+          }}
+          onClear={() => changeBasket([])}
+        />
+      )}
+      {toast && (
+        <p className="toast" role="status">
+          {toast}
+          <button type="button" onClick={() => setToast(null)}>
+            OK
+          </button>
+        </p>
+      )}
+      {catalog && current && (
         <DetailView
-          image={shown[selected]}
-          tags={edited!.tags.get(shown[selected].id)!}
+          image={current}
+          alike={similar}
+          thumbs={catalog.thumbs}
+          onShowSimilar={(image) => showIds('similar', current.id, [current.id, ...similar.map((other) => other.id)], image?.id ?? null)}
+          history={{ indexed: indexedById.get(current.id) ?? current, edits: catalog.edits.filter((edit) => edit.id === current.id) }}
+          inBasket={basket.includes(current.id)}
+          onBasket={(id) => changeBasket([...basket, id])}
+          tags={edited!.tags.get(current.id)!}
           vocabulary={catalog.vocabulary}
           onSave={saveEdits}
           bank={root}
           onTagsSaved={reloadTags}
-          position={selected}
+          position={selected!}
           count={shown.length}
           previews={catalog.previews}
           onNavigate={setSelected}

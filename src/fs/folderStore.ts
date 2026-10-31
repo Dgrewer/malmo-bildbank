@@ -51,6 +51,28 @@ export const saveUserName = (name: string) => save(USER_KEY, name)
 export const loadFolder = () => load(FOLDER_KEY)
 export const saveFolder = (handle: FileSystemDirectoryHandle) => save(FOLDER_KEY, handle)
 
+// Mappen Hämtade bilder, dit bilderna laddas ner.
+const DOWNLOADS_KEY = 'downloads'
+export const loadDownloadFolder = () => load(DOWNLOADS_KEY)
+export const saveDownloadFolder = (handle: FileSystemDirectoryHandle) => save(DOWNLOADS_KEY, handle)
+
+// Korgen: id:n för bilderna som användaren har samlat. Delas inte med någon.
+const BASKET_KEY = 'basket'
+export async function loadBasket(): Promise<string[]> {
+  const ids = await run('readonly', (store) => store.get(BASKET_KEY))
+  return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []
+}
+export const saveBasket = (ids: string[]) => save(BASKET_KEY, ids)
+
+// Bildbankens sökväg på den här datorn, t.ex. C:\Users\namn\Malmö stad\Bildbank.
+// Används av Kopiera sökväg. Webbläsaren kan inte ta reda på den själv.
+const LOCAL_PATH_KEY = 'localPath'
+export async function loadLocalPath(): Promise<string> {
+  const path = await run('readonly', (store) => store.get(LOCAL_PATH_KEY))
+  return typeof path === 'string' ? path : ''
+}
+export const saveLocalPath = (path: string) => save(LOCAL_PATH_KEY, path)
+
 interface SavedOriginals {
   bank: FileSystemDirectoryHandle
   originals: FileSystemDirectoryHandle

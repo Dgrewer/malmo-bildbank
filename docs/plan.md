@@ -16,23 +16,23 @@ Stegen nedan följer den, plus det som har lagts till under bygget.
 ## Steg 5 – Sökning, taggning och nedladdning
 
 - [x] 5.1 Sökning: en sökruta för taggar, ordlistan (svenska och engelska, svensk ordstamsmatchning), fotograf och filnamn, med exakta träffar först och därefter AI-sök. Filter för fotograf, plats, år och rättigheter.
-- [ ] 5.2 Liknande bilder i detaljvyn, med AI-vektorerna.
+- [x] 5.2 Liknande bilder i detaljvyn, med AI-vektorerna.
 - [x] 5.3 Varning för saknat samtycke, och spärrade bilder markerade i rutnät och detaljvy. Inget rättighetsdatum. Detaljvyn visar fotodatum och upplösning (pixlar och dpi, går inte att ändra).
 - [x] Taggar hanteras likadant oavsett om en person eller AI:n har satt dem. En tagg som sätts för hand blir ett exempel, och appen sätter den direkt på liknande bilder. En tagg som tas bort från en bild kommer inte tillbaka på den bilden. Exemplen läses från `app-data/edits/`, så kollegor kan tagga samtidigt.
 - [x] Ord under "Hör ihop med" som inte är taggar blir taggar på bilderna med taggen (t.ex. slott → Malmöhus). Hellre en tagg för mycket än för lite. "Andra ord för samma sak" är bara för att hitta taggen (engelska ord och felstavningar) och visas inte.
-- [ ] Admin, AI-taggar: taggar som bara har satts för hand listas också, med bilderna de har spridits till, så att gränsen går att justera där.
-- [ ] 5.4 Taggning: läs om alla filer i `app-data/edits/` varje minut, så att kollegornas ändringar syns. Ändringshistorik per bild, där en felaktig ändring går att ångra.
-- [ ] 5.4 Logg i Admin: ändringar (från `app-data/edits/`), nya och borttagna bilder (från importerna), med vem och när.
-- [ ] 5.5 Nedladdning till mappen Hämtade bilder (se CLAUDE.md). Spärrade bilder går inte att ladda ner.
-- [ ] Ladda ner och Dela på varje bild i rutnätet: Dela-ikonen i övre vänstra hörnet och Ladda ner-ikonen i övre högra. De syns bara på bilden man håller musen över.
-- [ ] Korg: varje användare samlar bilder i en egen korg för att ladda ner dem alla på en gång.
+- [x] Admin, AI-taggar: taggar som bara har satts för hand listas också. Ett klick gör taggen till en AI-tagg med bilderna som exempel, så att gränsen går att justera där.
+- [x] 5.4 Taggning: läs om alla filer i `app-data/edits/` varje minut, så att kollegornas ändringar syns. Ändringshistorik per bild, där en felaktig ändring går att ångra.
+- [x] 5.4 Logg i Admin: ändringar (från `app-data/edits/`), nya och borttagna bilder (från importerna), med vem och när.
+- [x] 5.5 Nedladdning till mappen Hämtade bilder (se CLAUDE.md). Spärrade bilder går inte att ladda ner.
+- [x] Ladda ner och Dela på varje bild i rutnätet: Dela-ikonen i övre vänstra hörnet och Ladda ner-ikonen i övre högra. De syns bara på bilden man håller musen över.
+- [x] Korg: varje användare samlar bilder i en egen korg för att ladda ner dem alla på en gång.
   - Korgen sparas bara på användarens dator och delas inte med andra.
   - Korgen ligger som ett fält längst ner på sidan. Man drar bilder dit.
   - En miniatyr i korgen förstoras till rutnätets miniatyrstorlek när man håller musen över den. Ett litet rött kryss i övre högra hörnet tar bort bilden ur korgen.
-  - En Ladda ner-ikon hämtar alla bilderna i korgen. En Dela-ikon skapar en länk till bilderna som kan skickas till någon annan.
-- [ ] 5.6 Kopiera sökväg i adminläget, för InDesign. Rotsökvägen ställs in per dator.
-- [ ] 5.7 Importen bakar in ändringarna från `app-data/edits/` i index.json.
-- [ ] Rättigheter för en hel fotografmapp (`original/<fotograf>/`), i ett svep. Fotots inställning går före mappens.
+  - En Ladda ner-ikon hämtar alla bilderna i korgen. En Dela-ikon kopierar en länk till bilderna (#bilder=…). Den fungerar för kollegor som har bildbanken synkad, inte för någon utanför.
+- [x] 5.6 Kopiera sökväg, för InDesign. Rotsökvägen ställs in per dator i Admin, fliken Den här datorn, och då visas knappen i detaljvyn.
+- [x] 5.7 Importen bakar in ändringarna från `app-data/edits/` i index.json.
+- [x] Rättigheter för en hel fotografmapp (`original/<fotograf>/`), i ett svep. Fotots inställning går före mappens.
 
 ## Steg 6 – Publicera på GitHub Pages
 

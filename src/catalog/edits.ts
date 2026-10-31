@@ -20,6 +20,20 @@ export interface FieldValues {
 export type Field = keyof FieldValues
 export const FIELDS: Field[] = ['photographer', 'byline', 'terms', 'consent', 'blocked', 'place']
 
+// Fälten som kan ställas in för en hel fotografmapp. Ändringens id är då
+// mappens sökväg, t.ex. "original/Fotograf A/", och värdet null tar bort
+// mappens inställning. Bildens egen ändring går före mappens.
+export type FolderField = 'terms' | 'consent' | 'blocked'
+export const FOLDER_FIELDS: FolderField[] = ['terms', 'consent', 'blocked']
+
+// "original/Fotograf A/bild.jpg" -> "original/Fotograf A/"
+export function folderId(path: string): string {
+  const [top, photographer] = path.split('/')
+  return `${top}/${photographer}/`
+}
+
+const isFolder = (id: string) => id.endsWith('/')
+
 export type Edit = { at: string; by: string; id: string } & (
   | { [F in Field]: { field: F; value: FieldValues[F] } }[Field]
   | { tag: string; on: boolean }
@@ -73,9 +87,17 @@ export function parseEdit(line: string): Edit | null {
   }
   if (!edit || typeof edit.at !== 'string' || typeof edit.id !== 'string' || typeof edit.by !== 'string') return null
   if (typeof edit.tag === 'string' && typeof edit.on === 'boolean' && edit.tag.trim()) return edit as unknown as Edit
+  if (typeof edit.field === 'string' && isFolder(edit.id)) {
+    if (!FOLDER_FIELDS.includes(edit.field as FolderField)) return null
+    if (edit.value === null || validValue(edit.field, edit.value)) return edit as unknown as Edit
+    return null
+  }
   if (typeof edit.field === 'string' && validValue(edit.field, edit.value)) return edit as unknown as Edit
   return null
 }
+
+// Vad ändringen gäller: ett fält eller en tagg. Den senaste ändringen med samma nyckel gäller.
+export const editKey = (edit: Edit) => ('tag' in edit ? `tag:${wordKey(edit.tag)}` : `field:${edit.field}`)
 
 // Slår ihop ändringarna. Den senaste ändringen av samma fält eller tagg gäller.
 export function mergeEdits(all: Edit[]): Edits {
@@ -86,16 +108,19 @@ export function mergeEdits(all: Edit[]): Edits {
       tags.set(wordKey(edit.tag), { tag: edit.tag.trim(), on: edit.on })
       edits.tags.set(edit.id, tags)
     } else {
-      const fields = edits.fields.get(edit.id) ?? {}
-      edits.fields.set(edit.id, { ...fields, [edit.field]: edit.value })
+      const fields: Partial<FieldValues> = { ...edits.fields.get(edit.id), [edit.field]: edit.value }
+      // null tar bort mappens inställning.
+      if (edit.value === null && isFolder(edit.id)) delete fields[edit.field]
+      edits.fields.set(edit.id, fields)
     }
   }
   return edits
 }
 
 export function applyEdits(image: ImageRecord, edits: Edits): ImageRecord {
+  const folder = edits.fields.get(folderId(image.path))
   const fields = edits.fields.get(image.id)
-  return fields ? { ...image, ...fields } : image
+  return folder || fields ? { ...image, ...folder, ...fields } : image
 }
 
 // Bildens taggar efter ändringarna: borttagna försvinner, tillagda kommer sist.

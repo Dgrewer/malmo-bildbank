@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { formatDuration, isVideo } from '../catalog/fileFormat.ts'
 import type { ImageRecord } from '../catalog/types.ts'
+import { DownloadIcon, DRAG_TYPE, ShareIcon } from '../download/Basket.tsx'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 const MIN_CELL = 180
@@ -12,11 +13,13 @@ interface Props {
   images: ImageRecord[]
   thumbs: FileSystemDirectoryHandle
   onOpen: (index: number) => void
+  onDownload: (image: ImageRecord) => void
+  onShare: (image: ImageRecord) => void
 }
 
 // Virtuellt rutnät: bara raderna som syns (plus OVERSCAN_ROWS) finns i DOM:en,
 // oavsett hur många bilder indexet innehåller.
-export function Gallery({ images, thumbs, onOpen }: Props) {
+export function Gallery({ images, thumbs, onOpen, onDownload, onShare }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [scrollTop, setScrollTop] = useState(0)
@@ -58,6 +61,8 @@ export function Gallery({ images, thumbs, onOpen }: Props) {
             top={GAP + Math.floor(index / columns) * rowHeight}
             size={cell}
             onOpen={onOpen}
+            onDownload={onDownload}
+            onShare={onShare}
           />
         ))}
       </div>
@@ -73,16 +78,23 @@ interface ThumbnailProps {
   top: number
   size: number
   onOpen: (index: number) => void
+  onDownload: (image: ImageRecord) => void
+  onShare: (image: ImageRecord) => void
 }
 
-function Thumbnail({ index, image, thumbs, left, top, size, onOpen }: ThumbnailProps) {
+function Thumbnail({ index, image, thumbs, left, top, size, onOpen, onDownload, onShare }: ThumbnailProps) {
   const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
   return (
+    <div className="gallery-slot" style={{ transform: `translate(${left}px, ${top}px)`, width: size, height: size }}>
     <button
       type="button"
       className={image.blocked ? 'gallery-cell is-blocked' : 'gallery-cell'}
       data-index={index}
-      style={{ transform: `translate(${left}px, ${top}px)`, width: size, height: size }}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(DRAG_TYPE, image.id)
+        event.dataTransfer.effectAllowed = 'copy'
+      }}
       onClick={() => onOpen(index)}
       aria-label={
         `${image.id}, ${isVideo(image.path) ? 'video' : 'foto'} ${image.photographer}` +
@@ -110,5 +122,17 @@ function Thumbnail({ index, image, thumbs, left, top, size, onOpen }: ThumbnailP
         </span>
       )}
     </button>
+      {/* Spärrade bilder får inte användas, så de går varken att dela eller ladda ner. */}
+      {!image.blocked && (
+        <>
+          <button type="button" className="cell-action share" title="Kopiera en länk till bilden" aria-label={`Dela ${image.id}`} onClick={() => onShare(image)}>
+            <ShareIcon />
+          </button>
+          <button type="button" className="cell-action download" title="Ladda ner originalet" aria-label={`Ladda ner ${image.id}`} onClick={() => onDownload(image)}>
+            <DownloadIcon />
+          </button>
+        </>
+      )}
+    </div>
   )
 }

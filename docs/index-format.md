@@ -89,6 +89,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `previewProblem` | sträng eller `null` | Varför miniatyr och förhandsbild saknas, skrivet för den som ska åtgärda det. `null` när de finns. Då är `width` och `height` 0, och appen visar en !-ikon med förklaringen. Appen läser äldre index utan fältet som `null`. |
 | `hash` | sträng eller `null` | Snabbt fingeravtryck av originalet: `q1-` och SHA-256 i hex av filens storlek (8 byte, big-endian) följd av filens första och sista 4 MB, eller hela filen om den är högst 8 MB. För ett RAW-par är det SHA-256 av de två filernas fingeravtryck, åtskilda av radbrytning. Används för att känna igen flyttade och omdöpta filer. `null` i index från före importen i appen. |
 | `fileSize`, `fileModified` | heltal eller `null` | Originalets storlek i byte och ändringstid i millisekunder sedan 1970. Är båda oförändrade återanvänds `hash` utan att filen läses. |
+| `unedited` | objekt, saknas oftast | Värdena innan importen bakade in användarnas ändringar, t.ex. `{"blocked": false, "tags": ["hav"]}`. Bara fält som en ändring har ändrat finns med. Se Ändringar. |
 
 `path` och `alternates` kan ha vilken filändelse som helst: jpg, png, tif, heic, cr2, nef osv. Appen visar formatet utifrån filändelsen och läser aldrig originalen för att visa dem, bara miniatyrerna och förhandsbilderna.
 
@@ -213,8 +214,22 @@ Varje användare skriver bara till sin egen fil, `app-data/edits/<namn>.jsonl`. 
 - `field` är ett av `photographer`, `byline`, `terms`, `consent`, `blocked` och `place` (som i indexet). `value` har samma typ som fältet i indexet.
 - En rad med `tag` lägger till (`"on": true`) eller tar bort (`"on": false`) en tagg på bilden. Det gäller bara den bilden. AI:n lär sig inte av det, eftersom de delade rättningarna görs i Admin, AI-taggar.
 - Appen läser alla filer i mappen och slår ihop dem. Den senaste ändringen (`at`) av samma fält eller tagg på samma bild gäller, oavsett vem som gjorde den. Rader som inte går att läsa hoppas över.
-- Importen ändrar aldrig filerna i `edits/`. Ändringarna läggs ovanpå indexet när bildbanken läses in, så de finns kvar efter en ny import.
-- Ändringar för en hel fotografmapp finns inte än, se `docs/plan.md`.
+- En hel fotografmapp kan få villkor, samtycke och spärr (Admin, Rättigheter). Då är `id` mappens sökväg med `/` sist, t.ex. `"original/Fotograf A/"`, och `field` är `terms`, `consent` eller `blocked`. `"value": null` tar bort mappens inställning. Bildens egen ändring går före mappens, och mappens går före värdet i indexet.
+- Appen läser om alla filer i mappen varje minut, så att kollegornas ändringar syns utan att sidan laddas om.
+- Detaljvyn visar bildens ändringshistorik. Den ändring som gäller för ett fält eller en tagg går att ångra. Ångra skrivs som en ny rad i användarens egen fil: för ett fält med värdet före ändringen, för en tagg med motsatt `on`.
+- Importen ändrar aldrig filerna i `edits/`. Den bakar in ändringarna i `index.json`: fälten får sina ändrade värden, en tillagd tagg hamnar i `tags` och en borttagen tas bort ur `tags` och `aiTags`. Värdena före ändringarna sparas i `unedited`, så att nästa import börjar från filens värden och bakar in ändringarna på nytt. Appen lägger fortfarande ändringarna ovanpå indexet, så resultatet blir detsamma med och utan inbakning.
+
+## Importloggen: app-data/importer.jsonl
+
+En rad per import som lade till eller tog bort bilder, med vem som importerade (namnet från Redigera). Visas i Admin, fliken Logg, tillsammans med ändringarna i `edits/`.
+
+```json
+{"at":"2026-10-31T02:00:00.000Z","by":"Fredrik","added":[{"id":"MB-000190","path":"original/Fotograf A/ny.jpg"}],"removed":[]}
+```
+
+## På den här datorn
+
+Det här sparas bara i webbläsaren (IndexedDB) och delas inte: bildbanksmappen, originalmappen, namnet, mappen Hämtade bilder, korgen och bildbankens sökväg för Kopiera sökväg. En delad länk är appens adress med `#bilder=MB-000012,MB-000031` sist. Den fungerar för den som har bildbanken synkad.
 
 ## Import
 
@@ -237,6 +252,7 @@ Importen körs i appen, under Importera. Bilderna läses som standard från bild
 - Kryssrutan "Kopiera nya original till bildbankens original/" är avstängd som standard och visas bara när originalmappen ligger utanför bildbanken. Är den ikryssad kopieras de nya bildernas original, och JPG:en till ett RAW-par, till bildbankens `original/` med samma sökväg som i `path`. En fil som redan finns där skrivs aldrig över. Har den samma storlek räknas den som redan kopierad, annars visas den i resultatet.
 - Bilder vars fil inte finns kvar tas bort ur indexet. Deras id delas inte ut igen.
 - Fält som går att ändra i appen, t.ex. rättigheter, följer med när en fil flyttas eller ändras.
+- Ändringarna i `app-data/edits/` bakas in i indexet, se Ändringar. Det som lades till och togs bort loggas i `app-data/importer.jsonl`.
 - Under importen sparas färdiga poster i `app-data/import/pagaende.jsonl`, en JSON-post per rad. Avbryts importen fortsätter nästa import med dem. Filen tas bort när indexet har skrivits.
 - Indexet skrivs först till `index.tmp.json`. Sedan sparas den nuvarande filen som `index.prev.json`, och den nya filen byter namn till `index.json`. För att gå tillbaka en version: byt namn på `index.prev.json` till `index.json`.
 - AI-vektorer räknas ut för nya och ändrade bilder, och för bilder som saknar en vektor. Saknas modellen görs importen utan AI-vektorer, och förhandsvisningen säger det.

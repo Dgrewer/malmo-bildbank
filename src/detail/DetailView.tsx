@@ -7,6 +7,9 @@ import { placeParts } from '../catalog/places.ts'
 import type { ShownTag, Vocabulary } from '../catalog/vocabulary.ts'
 import { EditForm } from './EditForm.tsx'
 import { SimilarPanel } from './SimilarPanel.tsx'
+import { SimilarImages } from './SimilarImages.tsx'
+import { History } from './History.tsx'
+import { Actions } from './Actions.tsx'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 
 interface Props {
@@ -31,6 +34,15 @@ interface Props {
   // Admin, där AI-taggarna ändras i fliken AI-taggar.
   onTagsSaved?: () => Promise<void>
   onClose: () => void
+  // Liknande bilder enligt AI-vektorerna, den mest lika först. Saknas i Admin.
+  alike?: ImageRecord[]
+  thumbs?: FileSystemDirectoryHandle
+  // Visar de liknande bilderna i galleriet, och öppnar image om den finns.
+  onShowSimilar?: (image: ImageRecord | null) => void
+  // Ändringshistoriken: bilden som den står i indexet och alla ändringar av den.
+  history?: { indexed: ImageRecord; edits: Edit[] }
+  inBasket?: boolean
+  onBasket?: (id: string) => void
 }
 
 function TagList({ tags, onTag }: { tags: ShownTag[]; onTag?: (tag: string) => void }) {
@@ -59,7 +71,10 @@ function TagList({ tags, onTag }: { tags: ShownTag[]; onTag?: (tag: string) => v
 // Modal dialog: Esc stänger, och fokus stannar i dialogen så länge den är öppen.
 // Vänster- och högerpil bläddrar. Dialogen ligger kvar öppen medan man bläddrar,
 // och förhandsbildens object-URL frigörs när bilden byts eller dialogen stängs.
-export function DetailView({ image, tags, position, count, previews, onNavigate, onTag, onPlace, vocabulary, onSave, bank, onTagsSaved, onClose }: Props) {
+export function DetailView({
+  image, tags, position, count, previews, onNavigate, onTag, onPlace, vocabulary, onSave, bank, onTagsSaved, onClose,
+  alike, thumbs, onShowSimilar, history, inBasket = false, onBasket,
+}: Props) {
   // Bilden som redigeras, eller null. Byts bilden avslutas redigeringen.
   const [editing, setEditing] = useState<string | null>(null)
   const isEditing = editing === image.id
@@ -206,6 +221,8 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </p>
         )}
 
+        {!isEditing && <Actions bank={bank} image={image} inBasket={inBasket} onBasket={onBasket} />}
+
         {isEditing ? (
           <EditForm
             image={image}
@@ -285,7 +302,18 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
                 'Inga taggar'
               )}
             </dd>
+            {alike && thumbs && onShowSimilar && (
+              <>
+                <dt>Liknande bilder</dt>
+                <dd className="detail-similar">
+                  <SimilarImages images={alike} thumbs={thumbs} onOpen={onShowSimilar} />
+                </dd>
+              </>
+            )}
           </dl>
+        )}
+        {!isEditing && history && history.edits.length > 0 && (
+          <History indexed={history.indexed} edits={history.edits} onSave={onSave} />
         )}
       </div>
       {similar && isEditing && onTagsSaved && (

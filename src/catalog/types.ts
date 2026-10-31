@@ -86,6 +86,11 @@ export interface ImageRecord {
   hash: string | null
   fileSize: number | null
   fileModified: number | null
+  // Värdena innan användarnas ändringar bakades in av importen (src/catalog/bake.ts).
+  // Saknas om bilden inte har ändrats.
+  unedited?: Partial<
+    Pick<ImageRecord, 'photographer' | 'byline' | 'terms' | 'consent' | 'blocked' | 'place' | 'tags' | 'aiTags'>
+  >
 }
 
 export function formatId(n: number): string {

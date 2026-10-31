@@ -6,6 +6,11 @@ import type { FromWorker, ImportResult, Phase, ScanSummary, ToWorker } from '../
 import { captureFrame } from '../import/videoFrame.ts'
 import { SameImages } from './SameImages.tsx'
 import { TagEditor } from './TagEditor.tsx'
+import { FolderRights } from './FolderRights.tsx'
+import { Log } from './Log.tsx'
+import { ThisComputer } from './ThisComputer.tsx'
+import type { Edit } from '../catalog/edits.ts'
+import type { ImageRecord } from '../catalog/types.ts'
 
 interface Props {
   // Bildbankens mapp, den som innehåller original och app-data.
@@ -13,6 +18,10 @@ interface Props {
   onClose: (changed: boolean) => void
   // Anropas när en import eller AI-taggarna har sparats, så att bilderna läses om.
   onSaved: () => Promise<void>
+  // Bilderna som de står i indexet och alla användares ändringar, för fliken Rättigheter.
+  images: ImageRecord[]
+  edits: Edit[]
+  onSaveEdits: (user: string, edits: Edit[]) => Promise<void>
 }
 
 type Originals =
@@ -68,13 +77,13 @@ function PathList({ title, items, render }: { title: string; items: unknown[]; r
 // - Importera bilder: välj originalmapp, se vad som har ändrats och kör
 //   importen. Allt tungt arbete sker i en Web Worker (src/import/worker.ts).
 // - AI-taggar: ändra taggarna och deras gränser (src/admin/TagEditor.tsx).
-export function AdminView({ bank, onClose, onSaved }: Props) {
+export function AdminView({ bank, onClose, onSaved, images: indexed, edits, onSaveEdits }: Props) {
   const [originals, setOriginals] = useState<Originals>({ kind: 'none' })
   const [state, setState] = useState<State>({ kind: 'idle' })
   const [changed, setChanged] = useState(false)
   // Kopiera nya original till bildbankens original/. Avstängt som standard.
   const [copy, setCopy] = useState(false)
-  const [tab, setTab] = useState<'import' | 'tags' | 'same'>('import')
+  const [tab, setTab] = useState<'import' | 'tags' | 'same' | 'rights' | 'log' | 'computer'>('import')
   // Sant medan AI-taggarna sparas.
   const [tagsBusy, setTagsBusy] = useState(false)
   // Osparade ändringar under AI-taggar. De försvinner om Admin stängs eller en import körs.
@@ -226,6 +235,9 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
               ['import', 'Importera bilder'],
               ['tags', 'AI-taggar'],
               ['same', 'Samma bild'],
+              ['rights', 'Rättigheter'],
+              ['log', 'Logg'],
+              ['computer', 'Den här datorn'],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -263,6 +275,7 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
             }}
             onBusy={setTagsBusy}
             onUnsaved={setUnsavedTags}
+            edits={edits}
           />
         )}
       </div>
@@ -271,6 +284,10 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
       {tab === 'same' && (
         <SameImages key={imports} bank={bank} originals={originals.kind === 'ready' ? originals.handle : null} />
       )}
+
+      {tab === 'rights' && <FolderRights images={indexed} edits={edits} onSave={onSaveEdits} />}
+      {tab === 'log' && <Log key={imports} bank={bank} />}
+      {tab === 'computer' && <ThisComputer />}
 
       <div hidden={tab !== 'import'}>
 

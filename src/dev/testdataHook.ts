@@ -6,6 +6,7 @@
 //   ?testdata=Original      en undermapp, t.ex. för att testa felmeddelanden
 //   &skip=app-data          hoppa över en mapp på översta nivån
 //   &repeat=3000            upprepa indexets poster till 3 000 bilder
+//   &edits=1000             läs om app-data/edits/ varje sekund i stället för varje minut
 //   &originals              kopiera också originalbilderna
 //   &fresh                  tom app-data, som en bildbank som aldrig har importerats
 //                           (AI-modellen i app-data/models/ finns ändå kvar)
@@ -25,6 +26,7 @@ declare global {
   interface Window {
     __bildbankTestFolder?: Promise<FileSystemDirectoryHandle>
     __bildbankTestRepeat?: number
+    __bildbankEditsInterval?: number
   }
 }
 
@@ -113,5 +115,6 @@ async function loadTestdataFolder(params: URLSearchParams): Promise<FileSystemDi
 const params = new URLSearchParams(location.search)
 if (params.has('testdata')) window.__bildbankTestFolder = loadTestdataFolder(params)
 if (params.has('repeat')) window.__bildbankTestRepeat = Number(params.get('repeat'))
+if (params.has('edits')) window.__bildbankEditsInterval = Number(params.get('edits'))
 
 export {}

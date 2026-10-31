@@ -37,6 +37,8 @@ import { ensureDirectory, readFile, writeFile } from '../fs/folder.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 import { writeIndexFile } from '../import/indexFiles.ts'
 import { useOpenImage } from './openImage.ts'
+import { mergeEdits, type Edit } from '../catalog/edits.ts'
+import { HAND_THRESHOLD, spreadHandTags } from '../ai/handTags.ts'
 
 // Adminvyn AI-taggar: välj en tagg, se bilderna sorterade efter hur väl de
 // stämmer och flytta gränsen. Taggar kan läggas till, ändras och tas bort, och
@@ -52,6 +54,8 @@ interface Props {
   onUnsaved: (count: number) => void
   // Sant medan ändringarna sparas. Adminvyn låser då flikarna.
   onBusy: (busy: boolean) => void
+  // Alla användares ändringar, för taggarna som bara har satts för hand.
+  edits: Edit[]
 }
 
 // Ett utkast till en tagg. key skiljer taggarna åt medan namnet ändras.
@@ -206,7 +210,36 @@ function unsavedCount(drafts: Drafts, saved: Drafts): number {
   )
 }
 
-export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
+interface HandTag {
+  tag: string
+  // Bilderna som har fått taggen och fått den borttagen för hand.
+  on: string[]
+  off: string[]
+  // Bilderna som taggen har spridits till.
+  spread: number
+}
+
+function handTagsOf(edits: Edit[], imageVectors: Vectors): HandTag[] {
+  const merged = mergeEdits(edits)
+  const spread = spreadHandTags(imageVectors, merged.tags, { version: 1, atLeastOneTag: false, aiTags: [] })
+  const byKey = new Map<string, HandTag>()
+  for (const [id, tags] of merged.tags) {
+    for (const [key, edit] of tags) {
+      const hand = byKey.get(key) ?? { tag: edit.tag, on: [], off: [], spread: 0 }
+      hand[edit.on ? 'on' : 'off'].push(id)
+      byKey.set(key, hand)
+    }
+  }
+  for (const tags of spread.values()) {
+    for (const tag of tags) {
+      const hand = byKey.get(wordKey(tag))
+      if (hand) hand.spread++
+    }
+  }
+  return [...byKey.values()].filter((hand) => hand.on.length).sort((a, b) => a.tag.localeCompare(b.tag, 'sv'))
+}
+
+export function TagEditor({ bank, onSaved, onBusy, onUnsaved, edits }: Props) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
   const [drafts, setDrafts] = useState<Drafts>({ atLeastOneTag: true, tags: [], hiddenKeywords: [] })
   const [selected, setSelected] = useState<number | null>(null)
@@ -446,6 +479,9 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
     .filter((draft) => !needle || draft.tag.toLowerCase().includes(needle) || draft.prompt.toLowerCase().includes(needle))
     .sort((a, b) => (a.tag === '' ? -1 : b.tag === '' ? 1 : a.tag.localeCompare(b.tag, 'sv')))
   const removed = data.saved.tags.filter((draft) => !drafts.tags.some((d) => d.key === draft.key))
+  // Taggar som bara har satts för hand, med bilderna och hur många bilder de har spridits till.
+  const names = new Set(drafts.tags.map((draft) => wordKey(draft.tag)))
+  const handTags = handTagsOf(edits, data.imageVectors).filter((hand) => !names.has(wordKey(hand.tag)))
 
   return (
     <section className="tag-editor">
@@ -461,7 +497,7 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
         <p>
           Tryck <strong>Inte rätt</strong> under en bild som har fått fel tagg. Känner AI:n inte igen en byggnad eller
           plats, tryck <strong>Exempel</strong> under några bilder som visar den. Ändringarna gäller för alla, även för
-          bilder som importeras senare. Taggar som bara har satts i Redigera visas inte här än.
+          bilder som importeras senare.
         </p>
       </div>
 
@@ -589,6 +625,42 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
           </ul>
           {removed.length > 0 && (
             <p className="removed-tags">Tas bort när du sparar: {removed.map((draft) => draft.tag).join(', ')}</p>
+          )}
+          {handTags.length > 0 && (
+            <div className="hand-tags">
+              <p className="tag-count">Satta för hand i Redigera</p>
+              <ul className="tag-names">
+                {handTags.map((hand) => (
+                  <li key={hand.tag}>
+                    <button
+                      type="button"
+                      disabled={!!saving}
+                      title="Gör taggen till en AI-tagg med bilderna som exempel, så att gränsen går att ändra"
+                      onClick={() => {
+                        const draft: Draft = {
+                          key: nextKey++,
+                          tag: hand.tag,
+                          prompt: '',
+                          threshold: HAND_THRESHOLD,
+                          examples: hand.on,
+                          ...(hand.off.length && { excluded: hand.off }),
+                        }
+                        change((all) => ({ ...all, tags: [...all.tags, draft] }))
+                        setSelected(draft.key)
+                        setFilter('')
+                      }}
+                    >
+                      <span>
+                        {hand.tag}
+                        <span className="tag-kind"> · {count(hand.on.length)} för hand</span>
+                      </span>
+                      <small>{count(hand.on.length + hand.spread)}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className="tag-explain">Klicka på en tagg för att se bilderna den har spridits till och ändra gränsen.</p>
+            </div>
           )}
         </aside>
 

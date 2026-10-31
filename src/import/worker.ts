@@ -50,6 +50,10 @@ import { buildPlan, type ImportPlan, type PlanItem } from './plan.ts'
 import type { FromWorker, Phase, ScanSummary, ToWorker } from './protocol.ts'
 import { scanOriginals, type ScannedFile } from './scan.ts'
 import { readVideoInfo } from './video.ts'
+import { bakeEdits, unbake } from '../catalog/bake.ts'
+import { loadEdits, mergeEdits } from '../catalog/edits.ts'
+import { loadUserName } from '../fs/folderStore.ts'
+import { IMPORT_LOG, type ImportRun } from './importLog.ts'
 
 interface HashedScannedFile extends ScannedFile {
   hash: string
@@ -318,7 +322,8 @@ function baseRecord(item: PlanItem<HashedScannedFile>): ImageRecord {
     durationSeconds: null,
     place: null,
     previewProblem: null,
-    ...previous,
+    // Ändringarna som förra importen bakade in tas bort och bakas in på nytt.
+    ...(previous && unbake(previous)),
     id: item.id,
     path: file.path,
     photographer: file.photographer,
@@ -555,6 +560,28 @@ async function moveDuplicates(current: Session, dropped: Map<ImageRecord, ImageR
   return result
 }
 
+// Skriver vad importen lade till och tog bort i app-data/importer.jsonl, för
+// Admin, fliken Logg. Går det inte är importen ändå klar.
+async function logImport(current: Session, images: ImageRecord[], removed: ImageRecord[]) {
+  const added = new Set(current.plan.items.filter((item) => item.change === 'new').map((item) => item.id))
+  const item = (image: ImageRecord) => ({ id: image.id, path: image.path })
+  const run: ImportRun = {
+    at: new Date().toISOString(),
+    by: await loadUserName().catch(() => ''),
+    added: images.filter((image) => added.has(image.id)).map(item),
+    removed: removed.map(item),
+  }
+  if (!run.added.length && !run.removed.length) return
+  try {
+    const appData = await ensureDirectory(current.bank, 'app-data')
+    const name = IMPORT_LOG.split('/').pop()!
+    const before = await readFile(current.bank, IMPORT_LOG)
+    await writeFile(appData, name, `${before ? await before.text() : ''}${JSON.stringify(run)}\n`)
+  } catch {
+    // Loggen är bara information.
+  }
+}
+
 async function runImport(current: Session, copy: boolean) {
   const { bank, plan, journal } = current
   const work = plan.items.filter((item) => item.change !== 'unchanged')
@@ -595,10 +622,13 @@ async function runImport(current: Session, copy: boolean) {
   // Av filer med samma namn och tagningstid behålls den med högst upplösning.
   // De andra tas inte med i indexet.
   const dropped = findDuplicates(all)
-  const images = all.filter((image) => !dropped.has(image))
-  const ai = await computeVectors(current, images)
+  const unbaked = all.filter((image) => !dropped.has(image))
+  const ai = await computeVectors(current, unbaked)
   const appData = await ensureDirectory(bank, 'app-data')
-  const tags = await setAiTags(current, appData, images, ai.computed)
+  const tags = await setAiTags(current, appData, unbaked, ai.computed)
+  // Användarnas ändringar bakas in efter AI-taggarna, så att en borttagen tagg inte kommer tillbaka.
+  const edits = mergeEdits(await loadEdits(bank))
+  const images = unbaked.map((image) => bakeEdits(image, edits))
   const copied = copy && !current.inBank ? await copyOriginals(current, images) : null
 
   post({ type: 'progress', phase: 'save', done: 0, total: 1 })
@@ -641,6 +671,7 @@ async function runImport(current: Session, copy: boolean) {
     if (!kept.has(id)) await removeImages(current, id)
   }
   for (const image of images) if (image.previewProblem) await removeImages(current, image.id)
+  await logImport(current, images, [...plan.removed, ...dropped.keys()])
   session = null
   return {
     processed: work.length,
