@@ -19,7 +19,8 @@ export interface ScanSummary {
   // Filer med exakt samma innehåll som en annan fil. Bara en av dem importeras.
   exactDuplicates: { path: string; sameAs: string }[]
   // Filer med samma namn och tagningstid som en bild med högre upplösning. Valdes
-  // bort vid en tidigare import och importeras inte.
+  // bort vid en tidigare import och importeras inte. Tom när bildbankens egen
+  // original/ importeras, eftersom importen då flyttar bort dubbletterna.
   nameDuplicates: { path: string; sameAs: string }[]
   // Filer som inte är bilder eller video.
   skipped: string[]
@@ -36,7 +37,9 @@ export interface ImportResult {
   processed: number
   total: number
   // Filer med samma namn och tagningstid som en annan bild, som inte togs med.
-  duplicates: { path: string; sameAs: string }[]
+  // movedTo: dit filen flyttades, eller null om den ligger kvar. problem: varför
+  // flytten inte gick.
+  duplicates: { path: string; sameAs: string; movedTo: string | null; problem: string | null }[]
   // Kopieringen till bildbankens original/, eller null om den inte valdes.
   // notOverwritten: filer som redan fanns med annat innehåll och inte skrevs över.
   copied: { copied: number; notOverwritten: string[] } | null

@@ -35,7 +35,7 @@ import { readMetadata } from '../src/import/metadata.ts'
 import { placeAt, placeWithTags } from '../src/catalog/places.ts'
 import { readVideoInfo } from '../src/import/video.ts'
 import UTIF from 'utif2'
-import { formatDate, rightsExpired } from '../src/catalog/rights.ts'
+import { formatTaken } from '../src/catalog/rights.ts'
 import type { ImageRecord, IndexFile } from '../src/catalog/types.ts'
 import type { BankConfig } from '../src/ai/tagConfig.ts'
 
@@ -280,7 +280,7 @@ async function expectedImport(root: string) {
     skipped,
     rawPairs,
     kept: records.filter((record) => !dropped.has(record)),
-    dropped: [...dropped].map(([record, kept]) => `${record.path} (behåller ${kept.path})`),
+    droppedRecords: [...dropped],
   }
 }
 
@@ -792,9 +792,9 @@ try {
   const isRaw = (i: ImageRecord) => fileFormat(i.path).startsWith('RAW')
   const cases = [
     { name: 'spärrad bild', index: find((i) => i.blocked) },
-    { name: 'utgångna rättigheter', index: find((i) => rightsExpired(i) && !i.blocked) },
-    { name: 'samtycke saknas', index: find((i) => i.consent === 'missing' && !i.blocked && !rightsExpired(i)) },
-    { name: 'bild utan anmärkningar', index: find((i) => !i.blocked && !rightsExpired(i) && i.consent !== 'missing') },
+    { name: 'bild med fotodatum', index: find((i) => !!i.takenAt && !i.blocked) },
+    { name: 'samtycke saknas', index: find((i) => i.consent === 'missing' && !i.blocked) },
+    { name: 'bild utan anmärkningar', index: find((i) => !i.blocked && i.consent !== 'missing') },
     { name: 'RAW med JPG visar båda formaten', index: find((i) => isRaw(i) && i.alternates.length > 0) },
     { name: 'RAW med inbäddad förhandsbild', index: find((i) => isRaw(i) && i.alternates.length === 0) },
     { name: 'video visas som stillbild med längd', index: find((i) => isVideo(i.path)) },
@@ -802,7 +802,6 @@ try {
   // Varje varning ska synas om och endast om bildens data kräver det.
   const warnings = (image: ImageRecord): [string, boolean][] => [
     ['Spärrad. Bilden får inte användas', image.blocked],
-    ['Rättigheterna gick ut', rightsExpired(image)],
     ['Samtycke saknas från personerna på bilden', image.consent === 'missing'],
     ['Videon kan inte spelas upp i bildbanken', isVideo(image.path)],
   ]
@@ -843,12 +842,13 @@ try {
         const preview = dialog.querySelector<HTMLImageElement>('.detail-preview img')!
         return { text: dialog.innerText, width: preview.naturalWidth, height: preview.naturalHeight }
       })
-      const rights = image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'
+      const taken = image.takenAt ? formatTaken(image.takenAt) : 'Okänt, filen saknar datum'
       const formats = [image.path, ...image.alternates].map((file) => `${fileFormat(file)} ${fileName(file)}`)
       if (image.durationSeconds !== null) formats.push(formatDuration(image.durationSeconds))
-      for (const value of [image.id, image.photographer, image.byline, image.terms, rights, ...formats]) {
+      for (const value of [image.id, image.photographer, image.byline, image.terms, taken, ...formats]) {
         assert(detail.text.includes(value), `Detaljvyn saknar "${value}"`)
       }
+      assert(!/Rättighet/.test(detail.text), 'Detaljvyn visar rättighetsdatum')
       for (const [warning, shown] of warnings(image)) {
         assert(detail.text.includes(warning) === shown, `Varningen "${warning}" ${shown ? 'saknas' : 'visas i onödan'}`)
       }
@@ -892,10 +892,11 @@ try {
     assert((await heading()) === index.images[0].id, 'Vänsterpil på första bilden bytte bild')
     await page.keyboard.press('ArrowRight')
     await page.keyboard.press('ArrowRight')
-    assert((await heading()) === index.images[2].id, `Högerpil två gånger gav ${await heading()}`)
+    assert((await heading()) === index.images[2].id, `Högerpil två gånger gav ${await heading()}, fokus på ${await page.evaluate(() => document.activeElement!.tagName + '.' + document.activeElement!.className)}`)
     await previewLoaded()
     await page.keyboard.press('ArrowLeft')
-    assert((await heading()) === index.images[1].id, `Vänsterpil gav ${await heading()}`)
+    const focus = () => page.evaluate(() => { const e = document.activeElement!; return `${e.tagName}.${e.className} ${e.textContent?.slice(0, 20)}` })
+    assert((await heading()) === index.images[1].id, `Vänsterpil gav ${await heading()}, fokus på ${await focus()}`)
 
     await page.locator('button[aria-label="Nästa bild"]').click()
     assert((await heading()) === index.images[2].id, 'Knappen Nästa bild bytte inte bild')
@@ -1073,12 +1074,31 @@ try {
       'Id:n är inte MB-000001 och framåt i sökvägsordning',
     )
     assert(firstIndex.lastId === expected.unique, `lastId är ${firstIndex.lastId}, väntade ${expected.unique}`)
+    // Dubbletterna med samma namn och tagningstid flyttas till app-data/dubbletter/
+    // och loggas i flyttade.jsonl.
     const dropped = (await readPreviewLists(page))[DUPLICATES_TITLE] ?? []
+    const movedText = expected.droppedRecords.map(
+      ([record, kept]) => `${record.path} (behåller ${kept.path}). Flyttad till app-data/dubbletter/${record.path}.`,
+    )
     assert(
-      JSON.stringify(dropped.sort()) === JSON.stringify(expected.dropped.sort()),
+      JSON.stringify(dropped.sort()) === JSON.stringify(movedText.sort()),
       `Fel dubbletter med samma namn: ${dropped.join(', ')}`,
     )
-    assert(firstIndex.duplicates?.length === expected.dropped.length, 'Indexet saknar de bortvalda dubbletterna')
+    assert(!firstIndex.duplicates?.length, 'Indexet listar flyttade dubbletter')
+    const movedLog = ((await readOpfs(page, `${bank}/app-data/dubbletter/flyttade.jsonl`)) ?? '').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    const keptIds = new Set(firstIndex.images.map((image) => image.id))
+    console.log(`      ${expected.droppedRecords.length} dubbletter med samma namn och tagningstid flyttades`)
+    for (const [record, kept] of expected.droppedRecords) {
+      const inBank = `${bank}/Original/${record.path.replace(/^original\//, '')}`
+      assert(!(await readOpfsBytes(page, inBank)), `${record.path} ligger kvar i originalmappen`)
+      assert(await readOpfsBytes(page, `${bank}/app-data/dubbletter/${record.path}`), `${record.path} finns inte i app-data/dubbletter/`)
+      const entry = movedLog.find((line) => line.from === record.path)
+      assert(
+        entry && entry.to === `app-data/dubbletter/${record.path}` && entry.keptPath === kept.path &&
+          !keptIds.has(entry.id) && keptIds.has(entry.keptId) && entry.movedAt,
+        `flyttade.jsonl saknar eller har fel rad för ${record.path}: ${JSON.stringify(entry)}`,
+      )
+    }
     assert(firstIndex.images.every((image) => /^q1-[0-9a-f]{64}$/.test(image.hash ?? '')), 'En bild saknar fingeravtryck')
     assert(firstIndex.images.every((image) => image.consent === 'not-required'), 'Samtycke är inte not-required')
     for (const raw of expected.rawPairs) {
@@ -1095,7 +1115,7 @@ try {
       `Andra sökningen: ${JSON.stringify(counts)} ${lists['Ändrade'] ?? ''}`,
     )
     const skippedAgain = (await readPreview(page)).lists[DUPLICATES_TITLE] ?? []
-    assert(skippedAgain.length === expected.dropped.length, 'Bortvalda dubbletter visas inte vid nästa sökning')
+    assert(!skippedAgain.length, 'Flyttade dubbletter visas vid nästa sökning')
   })
 
   await test('4.4 AI-vektorerna sparas i embeddings.bin och modellen körs lokalt', async () => {

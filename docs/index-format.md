@@ -73,7 +73,7 @@ Bilder förstoras aldrig. En bild som är mindre än 1600 px får en förhandsbi
 | `photographer` | sträng | Fotografens namn, samma som mappen `original/<fotograf>/` (NFC). |
 | `byline` | sträng | Texten som ska stå vid bilden när den publiceras. |
 | `terms` | sträng | Användningsvillkor i klartext. |
-| `rightsUntil` | sträng eller `null` | Sista dag bilden får användas, `ÅÅÅÅ-MM-DD`. `null` betyder att det inte finns något slutdatum. Bilden räknas som utgången dagen efter. |
+| `rightsUntil` | sträng eller `null` | Används inte längre. Finns kvar så att äldre index går att läsa, men visas inte och påverkar ingenting. |
 | `consent` | `"given"`, `"missing"` eller `"not-required"` | Samtycke från personer på bilden. `given`: samtycke finns. `missing`: samtycke behövs men saknas, appen varnar. `not-required`: inga identifierbara personer. |
 | `blocked` | boolesk | `true` om bilden är spärrad och inte får användas. Appen markerar den tydligt. |
 | `width`, `height` | heltal | Originalets storlek i pixlar, efter EXIF-rotation. |
@@ -198,7 +198,7 @@ I detaljvyn visas platsen som Stortorget · Gamla Staden · Norr, och ett klick 
 
 ## Ändringar: app-data/edits/
 
-I detaljvyn finns **Redigera**. Där kan man ändra fotograf, byline, villkor, rättigheter till och med, samtycke, spärr, plats och taggar, men inte filnamn eller format. **Spara** skriver bara det som har ändrats.
+I detaljvyn finns **Redigera**. Där kan man ändra fotograf, byline, villkor, samtycke, spärr, plats och taggar, men inte filnamn eller format. **Spara** skriver bara det som har ändrats.
 
 Varje användare skriver bara till sin egen fil, `app-data/edits/<namn>.jsonl`. Namnet frågas efter första gången och sparas i webbläsaren på den datorn. Tecken som inte får finnas i filnamn byts mot `-`. Filen har en ändring per rad, och nya rader läggs till sist:
 
@@ -208,7 +208,7 @@ Varje användare skriver bara till sin egen fil, `app-data/edits/<namn>.jsonl`. 
 {"at":"2026-10-30T20:15:00.000Z","by":"Fredrik","id":"MB-000012","tag":"butik","on":false}
 ```
 
-- `field` är ett av `photographer`, `byline`, `terms`, `rightsUntil` (`"ÅÅÅÅ-MM-DD"` eller `null`), `consent`, `blocked` och `place` (som i indexet). `value` har samma typ som fältet i indexet.
+- `field` är ett av `photographer`, `byline`, `terms`, `consent`, `blocked` och `place` (som i indexet). `value` har samma typ som fältet i indexet.
 - En rad med `tag` lägger till (`"on": true`) eller tar bort (`"on": false`) en tagg på bilden. Det gäller bara den bilden. AI:n lär sig inte av det, eftersom de delade rättningarna görs i Admin, AI-taggar.
 - Appen läser alla filer i mappen och slår ihop dem. Den senaste ändringen (`at`) av samma fält eller tagg på samma bild gäller, oavsett vem som gjorde den. Rader som inte går att läsa hoppas över.
 - Importen ändrar aldrig filerna i `edits/`. Ändringarna läggs ovanpå indexet när bildbanken läses in, så de finns kvar efter en ny import.
@@ -220,8 +220,12 @@ Importen körs i appen, under Importera. Bilderna läses som standard från bild
 
 - Bilder känns igen på `hash`, så en flyttad eller omdöpt fil behåller sitt id. Finns inget fingeravtryck med samma värde matchas filen på `path`.
 - Nya bilder får `lastId + 1` och framåt. Befintliga id ändras aldrig.
-- Filer med exakt samma innehåll importeras en gång. Importen flyttar och ändrar aldrig något i originalmappen.
-- Av filer med samma namn (oavsett mapp och versaler) och samma tagningstid, när båda har en, behålls den med högst upplösning, och vid lika upplösning den med lägst id. De andra hamnar i `duplicates` och importeras inte igen så länge bilden som behölls finns kvar.
+- Filer med exakt samma innehåll importeras en gång. De ligger kvar i originalmappen.
+- Av filer med samma namn (oavsett mapp och versaler) och samma tagningstid, när båda har en, behålls den med högst upplösning, och vid lika upplösning den med lägst id. De andra tas inte med i indexet.
+  - Importeras bildbankens egen `original/` flyttas de, och JPG:en till ett RAW-par, till `app-data/dubbletter/` med samma sökväg som i `original/`. Varje flytt loggas i `app-data/dubbletter/flyttade.jsonl` (formatet under Hur testdata skapas). Filen skrivs först och tas bort ur `original/` när kopian är hel. Finns målfilen redan flyttas ingenting, och filen hamnar i `duplicates`.
+  - Importeras en mapp utanför bildbanken ändras ingenting där. Dubbletterna hamnar i `duplicates` och importeras inte igen så länge bilden som behölls finns kvar.
+  - Resultatet visar för varje dubblett vart den flyttades, eller varför den ligger kvar.
+  - Det som tidigare import har listat i `duplicates` flyttas vid nästa import av bildbankens egen `original/`.
 - Metadata läses med exifr ur EXIF, IPTC och XMP för nya och ändrade filer: byline (IPTC Byline, EXIF Artist eller XMP creator, annars `Foto: <fotograf>`), tagningstid, nyckelord, bildtext och storlek. IPTC-text som är UTF-8 men lästs som Latin-1 ("MalmÃ¶") avkodas om. Texter som kameror skriver in automatiskt, t.ex. "OLYMPUS DIGITAL CAMERA", tas bort. Saknar en RAW-fil metadata används JPG:en bredvid den.
 - För film läses längd och inspelningstid ur filens mvhd-box. Tiden är i UTC i filen och lagras som lokal tid.
 - Nya bilder får `consent: "not-required"`, tomma villkor och inget slutdatum.

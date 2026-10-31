@@ -390,7 +390,14 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
           <PathList
             title={DUPLICATES_TITLE}
             items={state.result.duplicates}
-            render={(item: { path: string; sameAs: string }) => `${item.path} (behåller ${item.sameAs})`}
+            render={(item: ImportResult['duplicates'][number]) =>
+              `${item.path} (behåller ${item.sameAs})` +
+              (item.movedTo
+                ? `. Flyttad till ${item.movedTo}.`
+                : item.problem
+                  ? `. Ligger kvar, kunde inte flyttas: ${item.problem}`
+                  : '. Ligger kvar i originalmappen.')
+            }
           />
           {state.result.ai.model && (
             <p className="ai-result">

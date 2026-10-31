@@ -18,6 +18,7 @@ import {
   saveTagVectors,
   storedPromptVectors,
 } from '../ai/tagging.ts'
+import { moveDuplicate } from '../admin/moveDuplicate.ts'
 import { findDuplicates } from '../catalog/duplicates.ts'
 import { extension, isVideo, RAW_EXTENSIONS, TIFF_EXTENSIONS } from '../catalog/fileFormat.ts'
 import { readIndexFile } from '../catalog/loadIndex.ts'
@@ -68,6 +69,9 @@ interface Session {
   resumed: Map<string, ImageRecord>
   // Dubbletter med samma namn och tagningstid som tidigare importer har valt bort.
   duplicates: IndexDuplicate[]
+  // Är originalmappen bildbankens egen original/? Då flyttas dubbletterna bort,
+  // och det finns inget att kopiera.
+  inBank: boolean
   // Id:n från en avbruten import som inte hör till den här originalmappen.
   // Deras miniatyrer tas bort när indexet är sparat, om id:t inte har delats ut igen.
   foreign: Set<string>
@@ -197,10 +201,15 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
   progress('hash', hashed.length, hashed.length)
 
   // En fil som en tidigare import valde bort som dubblett importeras inte igen,
-  // så länge bilden som behölls finns kvar.
+  // så länge bilden som behölls finns kvar. Importeras bildbankens egen
+  // original/ tas de med igen, så att importen kan flytta bort dem.
+  const bankOriginals = await findDirectory(bank, 'original')
+  const inBank = bankOriginals ? await bankOriginals.isSameEntry(originals) : false
   const found = new Set(hashed.map((file) => file.hash))
   const alive = new Map(previous.filter((record) => record.hash && found.has(record.hash)).map((r) => [r.id, r]))
-  const duplicates = (index?.duplicates ?? []).filter((duplicate) => alive.has(duplicate.keptId) && found.has(duplicate.hash))
+  const duplicates = inBank
+    ? []
+    : (index?.duplicates ?? []).filter((duplicate) => alive.has(duplicate.keptId) && found.has(duplicate.hash))
   const skippedHashes = new Set(duplicates.map((duplicate) => duplicate.hash))
 
   const files = hashed.filter((file) => !skippedHashes.has(file.hash))
@@ -261,6 +270,7 @@ async function scan(bank: FileSystemDirectoryHandle, originals: FileSystemDirect
     journal: pending,
     resumed,
     duplicates,
+    inBank,
     foreign,
     vectors,
     model,
@@ -519,6 +529,31 @@ async function copyOriginals(current: Session, images: ImageRecord[]) {
   return result
 }
 
+interface Moved {
+  movedTo: string | null
+  problem: string | null
+}
+
+// Flyttar dubbletterna, och JPG:en till ett RAW-par, till app-data/dubbletter/
+// och loggar varje flytt i flyttade.jsonl. Går en flytt inte ligger filen kvar.
+async function moveDuplicates(current: Session, dropped: Map<ImageRecord, ImageRecord>) {
+  const originals = (await findDirectory(current.bank, 'original'))!
+  const result = new Map<ImageRecord, Moved>()
+  for (const [image, kept] of dropped) {
+    try {
+      let movedTo = ''
+      for (const path of [image.path, ...image.alternates]) {
+        const to = await moveDuplicate(current.bank, originals, { id: image.id, path }, kept)
+        if (path === image.path) movedTo = to
+      }
+      result.set(image, { movedTo, problem: null })
+    } catch (error) {
+      result.set(image, { movedTo: null, problem: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return result
+}
+
 async function runImport(current: Session, copy: boolean) {
   const { bank, plan, journal } = current
   const work = plan.items.filter((item) => item.change !== 'unchanged')
@@ -555,21 +590,22 @@ async function runImport(current: Session, copy: boolean) {
     .map((record) => ({ ...record, place: placeAt(record.gps, AREAS) }))
     .sort((a, b) => idNumber(a.id) - idNumber(b.id))
   // Av filer med samma namn och tagningstid behålls den med högst upplösning.
-  // De andra tas inte med i indexet, men filerna ligger kvar i originalmappen.
+  // De andra tas inte med i indexet.
   const dropped = findDuplicates(all)
   const images = all.filter((image) => !dropped.has(image))
   const ai = await computeVectors(current, images)
   const appData = await ensureDirectory(bank, 'app-data')
   const tags = await setAiTags(current, appData, images, ai.computed)
-  // Är originalmappen bildbankens egen original/ finns inget att kopiera.
-  const bankOriginals = await findDirectory(bank, 'original')
-  const inBank = bankOriginals ? await bankOriginals.isSameEntry(current.originals) : false
-  const copied = copy && !inBank ? await copyOriginals(current, images) : null
+  const copied = copy && !current.inBank ? await copyOriginals(current, images) : null
 
   post({ type: 'progress', phase: 'save', done: 0, total: 1 })
+  const moved = current.inBank ? await moveDuplicates(current, dropped) : new Map<ImageRecord, Moved>()
+  // Dubbletter som inte flyttades ligger kvar och importeras inte nästa gång.
   const duplicates: IndexDuplicate[] = [
     ...current.duplicates,
-    ...[...dropped].map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
+    ...[...dropped]
+      .filter(([image]) => !moved.get(image)?.movedTo)
+      .map(([image, kept]) => ({ path: image.path, hash: image.hash!, keptId: kept.id })),
   ]
   // Vektorerna skrivs före indexet. Varje rad har sitt id, så ett äldre index
   // fungerar ihop med en nyare vektorfil.
@@ -606,7 +642,12 @@ async function runImport(current: Session, copy: boolean) {
   return {
     processed: work.length,
     total: images.length,
-    duplicates: [...dropped].map(([image, kept]) => ({ path: image.path, sameAs: kept.path })),
+    duplicates: [...dropped].map(([image, kept]) => ({
+      path: image.path,
+      sameAs: kept.path,
+      movedTo: moved.get(image)?.movedTo ?? null,
+      problem: moved.get(image)?.problem ?? null,
+    })),
     copied,
     ai: { model: current.model, computed: ai.computed, total: vectors.size, problem: ai.problem, device: ai.device },
     tags: {
