@@ -1505,6 +1505,21 @@ try {
     assert((await page.$eval('dialog.detail[open] h2', (h2) => h2.textContent)) === firstId, 'Fel bild från AI-taggar')
     await page.keyboard.press('Escape')
     await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
+
+    // Osparade ändringar syns i spara-fältet och på fliken, och Admin frågar innan de försvinner.
+    await page.click('.tag-option input')
+    await step('Osparad ändring', waitForText(page, '1 osparad ändring'))
+    await step('Pricken på fliken', page.waitForSelector('.admin-tabs .unsaved-dot', { timeout: 5_000 }))
+    let question = ''
+    page.once('dialog', (dialog) => {
+      question = dialog.message()
+      void dialog.dismiss()
+    })
+    await clickButton(page, 'Tillbaka till bildbanken')
+    await page.waitForFunction(() => document.querySelector('.admin'), { timeout: 5_000 })
+    assert(question.includes('1 osparad ändring under AI-taggar'), `Frågan: ${question}`)
+    await clickButton(page, 'Ångra ändringar')
+    await page.waitForFunction(() => !document.querySelector('.admin-tabs .unsaved-dot'), { timeout: 5_000 })
     const hits = async () => {
       await page.waitForFunction(() => /får taggen\.$/.test(document.querySelector('.tag-hits')?.textContent ?? ''), {
         timeout: 60_000,
@@ -1631,7 +1646,7 @@ try {
     // Ångra gör att bilden kan få taggen igen.
     await page.click(`.tag-wrong li[data-id="${wrong}"] button`)
     await page.waitForSelector(`.tag-images li[data-id="${wrong}"]`, { timeout: 5_000 })
-    await waitForText(page, 'Du har ändringar som inte är sparade')
+    await waitForText(page, 'annars försvinner de när du lämnar Admin')
     await clickButton(page, 'Ångra ändringar')
 
     // Under en bild: ett klick på en tagg markerar den, ett klick till tar bort
@@ -1700,7 +1715,7 @@ try {
       await step('ångrat val', page.waitForSelector(`${nearestChip}.fallback`, { timeout: 30_000 }))
       await page.click(`${nearestChip} .split-keep`)
       await step('behållen närmaste tagg', page.waitForSelector(`${nearestChip}.chosen-keep`, { timeout: 30_000 }))
-      await waitForText(page, 'Du har ändringar som inte är sparade')
+      await waitForText(page, 'annars försvinner de när du lämnar Admin')
       await clickButton(page, 'Ångra ändringar')
       await step('ångrade ändringar', page.waitForSelector(`${nearestChip}.fallback`, { timeout: 30_000 }))
     } else {
@@ -1748,7 +1763,7 @@ try {
     await clickButton(page, 'Återställ förvalda taggar')
     await waitForText(page, `0 taggar fick förvalda värden och ${defaultCount.toLocaleString('sv-SE')} lades till`)
     await waitForText(page, `${(defaultCount + 3).toLocaleString('sv-SE')} taggar`)
-    await waitForText(page, 'Du har ändringar som inte är sparade')
+    await waitForText(page, 'annars försvinner de när du lämnar Admin')
     await clickButton(page, 'Ångra ändringar')
     await page.waitForFunction(() => document.querySelector('.tag-count')?.textContent === '3 taggar', { timeout: 5_000 })
 

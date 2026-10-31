@@ -75,6 +75,23 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
   const [tab, setTab] = useState<'import' | 'tags' | 'same'>('import')
   // Sant medan AI-taggarna sparas.
   const [tagsBusy, setTagsBusy] = useState(false)
+  // Osparade ändringar under AI-taggar. De försvinner om Admin stängs eller en import körs.
+  const [unsavedTags, setUnsavedTags] = useState(0)
+
+  // Webbläsaren frågar innan sidan stängs eller laddas om med osparade ändringar.
+  useEffect(() => {
+    if (!unsavedTags) return
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [unsavedTags])
+
+  // Frågar innan något görs som tar bort osparade ändringar under AI-taggar.
+  const keepUnsaved = (what: string) =>
+    unsavedTags > 0 &&
+    !window.confirm(
+      `Du har ${unsavedTags === 1 ? '1 osparad ändring' : `${unsavedTags} osparade ändringar`} under AI-taggar. ${what} tar bort dem. Fortsätt ändå?`
+    )
   // Fliken AI-taggar läses in första gången den öppnas.
   const tagsOpened = useRef(false)
   if (tab === 'tags' && !tagsOpened.current) tagsOpened.current = true
@@ -186,6 +203,7 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
 
   function startImport() {
     setState({ kind: 'running', phase: 'import', done: 0, total: 0, stopping: false })
+    if (keepUnsaved('Importen')) return
     send({ type: 'import', copyOriginals: copy && originals.kind === 'ready' && !originals.inBank })
   }
 
@@ -217,10 +235,13 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
               onClick={() => setTab(id)}
             >
               {label}
+              {id === 'tags' && unsavedTags > 0 && (
+                <span className="unsaved-dot" title="Osparade ändringar"> ●</span>
+              )}
             </button>
           ))}
         </nav>
-        <button type="button" disabled={busy} onClick={() => onClose(changed)}>
+        <button type="button" disabled={busy} onClick={() => !keepUnsaved('Att lämna Admin') && onClose(changed)}>
           Tillbaka till bildbanken
         </button>
       </div>
@@ -239,6 +260,7 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
               setState((current) => (current.kind === 'preview' ? { kind: 'idle' } : current))
             }}
             onBusy={setTagsBusy}
+            onUnsaved={setUnsavedTags}
           />
         )}
       </div>

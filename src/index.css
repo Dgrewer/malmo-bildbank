@@ -572,15 +572,34 @@ button.primary {
   margin-bottom: 0;
 }
 
+/* Spara-fältet ligger kvar överst när man scrollar, så att det alltid syns. */
 .tag-actions {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
   margin: 1rem 0;
+  padding: 0.6rem 0;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+}
+
+.tag-actions:has(.unsaved) {
+  margin-inline: -0.75rem;
+  padding-inline: 0.75rem;
+  background: var(--warning-bg);
+  border-bottom-color: var(--warning-text);
 }
 
 .tag-actions .unsaved {
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.admin-tabs .unsaved-dot {
   color: var(--warning-text);
 }
 

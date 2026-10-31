@@ -48,6 +48,8 @@ interface Props {
   bank: FileSystemDirectoryHandle
   // Anropas när indexet har sparats med nya AI-taggar.
   onSaved: () => void
+  // Antalet osparade ändringar, så att Admin kan varna innan de går förlorade.
+  onUnsaved: (count: number) => void
   // Sant medan ändringarna sparas. Adminvyn låser då flikarna.
   onBusy: (busy: boolean) => void
 }
@@ -189,7 +191,20 @@ export async function save(
   return updated
 }
 
-export function TagEditor({ bank, onSaved, onBusy }: Props) {
+// Antalet ändringar i utkastet jämfört med det sparade: taggar som är nya,
+// ändrade eller borttagna, och de två inställningarna.
+function unsavedCount(drafts: Drafts, saved: Drafts): number {
+  const savedByKey = new Map(saved.tags.map((draft) => [draft.key, draft]))
+  const keys = new Set(drafts.tags.map((draft) => draft.key))
+  return (
+    Number(drafts.atLeastOneTag !== saved.atLeastOneTag) +
+    Number(drafts.hiddenKeywords.join('\n') !== saved.hiddenKeywords.join('\n')) +
+    drafts.tags.filter((draft) => !savedByKey.has(draft.key) || !same(draft, savedByKey.get(draft.key)!)).length +
+    saved.tags.filter((draft) => !keys.has(draft.key)).length
+  )
+}
+
+export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
   const [drafts, setDrafts] = useState<Drafts>({ atLeastOneTag: true, tags: [], hiddenKeywords: [] })
   const [selected, setSelected] = useState<number | null>(null)
@@ -221,6 +236,8 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
 
   // Ordlistan som den blir med utkastet: synonymer, taggar som hör ihop och dolda nyckelord.
   const vocabulary = useMemo(() => buildVocabulary(toConfig(drafts)), [drafts])
+  const unsaved = state.kind === 'ready' ? unsavedCount(drafts, state.data.saved) : 0
+  useEffect(() => onUnsaved(unsaved), [unsaved, onUnsaved])
 
   if (state.kind === 'loading') return <p className="status">Läser AI-taggarna…</p>
   if (state.kind === 'error') {
@@ -470,7 +487,12 @@ export function TagEditor({ bank, onSaved, onBusy }: Props) {
             {saving.total > 0 && ` – räknar ut nya beskrivningar, ${count(saving.done)} av ${count(saving.total)}`}…
           </span>
         )}
-        {!saving && dirty && !problems.length && <span className="unsaved">Du har ändringar som inte är sparade.</span>}
+        {!saving && dirty && (
+          <span className="unsaved">
+            {unsaved === 1 ? '1 osparad ändring' : `${count(unsaved)} osparade ändringar`}. Tryck Spara ändringar, annars
+            försvinner de när du lämnar Admin.
+          </span>
+        )}
         {message && (
           <span role={message.kind === 'error' ? 'alert' : 'status'} className={message.kind === 'error' ? 'error' : undefined}>
             {message.text}
