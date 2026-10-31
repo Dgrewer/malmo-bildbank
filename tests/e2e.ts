@@ -2234,6 +2234,99 @@ try {
     assert(!(await page.$(checkbox)), 'Kryssrutan visas fast originalmappen är bildbankens egen')
     await page.close()
   })
+
+  console.log('5 Sökning, taggning och nedladdning')
+
+  await test('5.1 sökorden hittar böjningar, sammansättningar och ordlistans andra ord', async () => {
+    const { aiMatches, matchesWord, searchWords, textMatches } = await import('../src/catalog/search.ts')
+    const { buildVocabulary } = await import('../src/catalog/vocabulary.ts')
+    const pairs: [string, string, boolean][] = [
+      ['cyklar', 'cykel', true], ['cykel', 'cykelbana', true], ['båtar', 'segelbåt', true], ['bron', 'bro', true],
+      ['hamnen', 'småbåtshamn', true], ['kyrkan', 'kyrka', true], ['fåglar', 'fågel', true], ['torso', 'Turning Torso', true],
+      ['parken', 'Pildammsparken', true], ['husen', 'tegelhus', true],
+      ['barn', 'bar', false], ['is', 'kallbadhus', false], ['sol', 'solglasögon', false], ['man', 'människor', false],
+    ]
+    for (const [query, word, want] of pairs) assert(matchesWord(query, word) === want, `${query} ~ ${word} gav ${!want}`)
+    const defaults = JSON.parse(await fs.readFile('src/ai/defaultConfig.json', 'utf8'))
+    const vocabulary = buildVocabulary(defaults)
+    assert(JSON.stringify(searchWords('turning  torso', vocabulary)) === '["turning  torso"]', 'turning torso delas i två ord')
+    const image = async (id: string, fields: Partial<ImageRecord>) => ({ ...(await testRecord(id, `original/A/${id}.jpg`, 'Fotograf A')), ...fields })
+    const items = [
+      { image: await image('MB-000001', {}), tags: [{ tag: 'bro', ai: true }] },
+      { image: await image('MB-000002', { photographer: 'Anna Berg' }), tags: [{ tag: 'cykel', ai: false }] },
+      { image: await image('MB-000003', { path: 'original/A/Västra hamnen.jpg' }), tags: [] },
+      { image: await image('MB-000004', { place: { district: 'Norr', subdistrict: 'Gamla Staden', name: 'Stortorget' } }), tags: [] },
+    ]
+    const ids = (text: string) => textMatches(items, text, vocabulary).map((item) => item.id).join(',')
+    assert(ids('bridge') === 'MB-000001', `bridge hittar ${ids('bridge')}`)
+    assert(ids('cyklar berg') === 'MB-000002', `cyklar berg hittar ${ids('cyklar berg')}`)
+    assert(ids('västra') === 'MB-000003', `västra hittar ${ids('västra')}`)
+    assert(ids('torget') === 'MB-000004', `torget hittar ${ids('torget')}`)
+    assert(ids('cykel bro') === '', `cykel bro hittar ${ids('cykel bro')}`)
+
+    // AI-söket tar bara bilder som sticker ut från resten.
+    const vectors = new Map(Array.from({ length: 50 }, (_, n) => [`MB-${n}`, Float32Array.from([n === 7 ? 1 : 0.1 + (n % 5) * 0.01, 1])]))
+    const hits = aiMatches(Float32Array.from([1, 0]), vectors, new Set(vectors.keys()))
+    assert(JSON.stringify(hits) === '["MB-7"]', `AI-söket gav ${hits}`)
+  })
+
+  await test('5.1 sökrutan och filtren i galleriet', async () => {
+    const { applyEdits, mergeEdits, parseEdit } = await import('../src/catalog/edits.ts')
+    const index = JSON.parse(await fs.readFile('testdata/app-data/index.json', 'utf8')) as IndexFile
+    const editLines = await Promise.all(
+      (await fs.readdir('testdata/app-data/edits')).map((name) => fs.readFile(`testdata/app-data/edits/${name}`, 'utf8')),
+    )
+    const merged = mergeEdits(editLines.join('\n').split('\n').flatMap((line) => parseEdit(line) ?? []))
+    const images = index.images.map((image) => applyEdits(image, merged))
+    const page = await openPage('/?testdata')
+    try {
+      await page.waitForSelector('.gallery-cell[data-index="0"]', { timeout: 60_000 })
+      const status = () => page.$eval('.filter-bar', (element) => (element as HTMLElement).innerText).catch(() => '')
+      const shownIds = () =>
+        page.$$eval('.gallery-cell', (cells) =>
+          cells.sort((a, b) => Number((a as HTMLElement).dataset.index) - Number((b as HTMLElement).dataset.index)).map((cell) => cell.getAttribute('aria-label')!.split(',')[0]),
+        )
+      const count = (n: number) => `${n.toLocaleString('sv-SE')} ${n === 1 ? 'bild' : 'bilder'}`
+
+      // Filter: fotograf och rättigheter.
+      await page.select('select[aria-label="Fotograf"]', 'Fotograf B')
+      const fromB = images.filter((image) => image.photographer === 'Fotograf B').length
+      await waitForText(page, count(fromB))
+      await page.select('select[aria-label="Rättigheter"]', 'blocked')
+      const blockedB = images.filter((image) => image.photographer === 'Fotograf B' && image.blocked).length
+      await page.waitForFunction((text) => document.querySelector('.filter-bar')?.textContent?.startsWith(text), { timeout: 5_000 }, count(blockedB))
+      await clickButton(page, 'Rensa')
+      await page.waitForFunction(() => !document.querySelector('.filter-bar'), { timeout: 5_000 })
+
+      // År: bara rimliga år finns i listan.
+      const years = await page.$$eval('select[aria-label="År"] option', (options) => options.map((option) => option.textContent))
+      assert(!years.includes('0002') && years.includes('2024'), `Åren i listan: ${years}`)
+      await page.select('select[aria-label="År"]', '2024')
+      const from2024 = images.filter((image) => image.takenAt?.startsWith('2024')).length
+      await page.waitForFunction((text) => document.querySelector('.filter-bar')?.textContent?.startsWith(text), { timeout: 5_000 }, count(from2024))
+      await clickButton(page, 'Rensa')
+
+      // Sökorden först, sedan AI-sökets träffar.
+      await page.type('input[type="search"]', 'cyklar')
+      await page.waitForFunction(() => /med sökorden/.test(document.querySelector('.filter-bar')?.textContent ?? '') && !/letar/.test(document.querySelector('.filter-bar')!.textContent!), { timeout: 120_000 })
+      const text = await status()
+      assert(!text.includes('fungerar inte'), `AI-söket: ${text}`)
+      const exact = Number(text.match(/(\d+) med sökorden/)![1])
+      assert(exact >= 2, `Bara ${exact} bilder med cykel: ${text}`)
+      const first = await shownIds()
+      assert(first.slice(0, exact).includes('MB-000012'), `MB-000012 (cykel) är inte bland sökordens träffar: ${first}`)
+      await elementScreenshot(page, '.search-bar', '5.1-sokruta')
+
+      // Påhittade ord ger inga träffar, inte heller från AI-söket.
+      await page.click('input[type="search"]', { count: 3 })
+      await page.type('input[type="search"]', 'xyzzyqwerty')
+      await page.waitForFunction(() => document.querySelector('.filter-bar')?.textContent === '0 bilder · 0 med sökorden', { timeout: 60_000 })
+      await clickButton(page, 'Rensa')
+      await page.waitForFunction(() => !document.querySelector('.filter-bar') && !(document.querySelector('input[type="search"]') as HTMLInputElement).value, { timeout: 5_000 })
+    } finally {
+      await page.close()
+    }
+  })
 } finally {
   await browser.close()
   await server.close()

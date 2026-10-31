@@ -15,7 +15,7 @@ Stegen nedan följer den, plus det som har lagts till under bygget.
 
 ## Steg 5 – Sökning, taggning och nedladdning
 
-- [ ] 5.1 Sökning: en sökruta för taggar, ordlistan (svenska och engelska, svensk ordstamsmatchning), fotograf och filnamn, med exakta träffar först och därefter AI-sök. Filter för fotograf, plats, år och rättigheter.
+- [x] 5.1 Sökning: en sökruta för taggar, ordlistan (svenska och engelska, svensk ordstamsmatchning), fotograf och filnamn, med exakta träffar först och därefter AI-sök. Filter för fotograf, plats, år och rättigheter.
 - [ ] 5.2 Liknande bilder i detaljvyn, med AI-vektorerna.
 - [x] 5.3 Varning för saknat samtycke, och spärrade bilder markerade i rutnät och detaljvy. Inget rättighetsdatum. Detaljvyn visar fotodatum och upplösning (pixlar och dpi, går inte att ändra).
 - [x] Taggar hanteras likadant oavsett om en person eller AI:n har satt dem. En tagg som sätts för hand blir ett exempel, och appen sätter den direkt på liknande bilder. En tagg som tas bort från en bild kommer inte tillbaka på den bilden. Exemplen läses från `app-data/edits/`, så kollegor kan tagga samtidigt.

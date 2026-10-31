@@ -13,6 +13,31 @@ import { buildVocabulary, shownTags, wordKey, type ShownTag, type Vocabulary } f
 import { ensureDirectory, readFile } from './fs/folder.ts'
 import { DetailView } from './detail/DetailView.tsx'
 import { Gallery } from './gallery/Gallery.tsx'
+import { SearchBar, type FilterOptions } from './gallery/SearchBar.tsx'
+import { ModelMissingError, textEmbeddings } from './ai/model.ts'
+import { aiMatches, matchesFilters, NO_FILTERS, textMatches, year, type Filters } from './catalog/search.ts'
+
+// Väntetiden i millisekunder efter sista tangenttrycket innan AI-söket körs.
+const AI_DELAY = 400
+
+const count = (n: number) => `${n.toLocaleString('sv-SE')} ${n === 1 ? 'bild' : 'bilder'}`
+
+const sorted = (values: Iterable<string>) => [...new Set(values)].sort((a, b) => a.localeCompare(b, 'sv'))
+
+// Värdena som filtren kan ha, bara de som någon bild har.
+function filterOptions(images: ImageRecord[]): FilterOptions {
+  const places = images.flatMap((image) => (image.place ? [image.place] : []))
+  return {
+    photographers: sorted(images.map((image) => image.photographer)),
+    // Kameror som inte har ställts in kan ange t.ex. år 0002.
+    years: sorted(images.map(year).filter((value) => value >= '1900')).reverse(),
+    places: [
+      { label: 'Stadsområden', values: sorted(places.map((place) => place.district)) },
+      { label: 'Delområden', values: sorted(places.flatMap((place) => (place.subdistrict ? [place.subdistrict] : []))) },
+      { label: 'Torg och parker', values: sorted(places.flatMap((place) => (place.name ? [place.name] : []))) },
+    ].filter((group) => group.values.length),
+  }
+}
 
 interface Catalog {
   // Bilderna som de står i indexet, före användarnas ändringar.
@@ -80,6 +105,10 @@ export function Library({ root, onChangeFolder }: Props) {
   const [adminImage, setAdminImage] = useState<{ ids: string[]; position: number } | null>(null)
   // Räknas upp när importen har ändrat indexet, så att katalogen läses om.
   const [version, setVersion] = useState(0)
+  const [text, setText] = useState('')
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS)
+  // AI-sökets träffar för söktexten text. problem förklarar varför AI-söket inte fungerade.
+  const [ai, setAi] = useState<{ text: string; ids: string[]; problem: string | null } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -116,14 +145,52 @@ export function Library({ root, onChangeFolder }: Props) {
     return { images, tags }
   }, [catalog])
   const byId = useMemo(() => new Map((edited?.images ?? []).map((image) => [image.id, image])), [edited])
-  const shown = useMemo(() => {
-    if (!edited || !filter) return edited?.images ?? []
-    if (filter.kind === 'place') {
-      return edited.images.filter((image) => image.place && placeParts(image.place).includes(filter.value))
+  const options = useMemo(() => filterOptions(edited?.images ?? []), [edited])
+
+  // AI-söket körs en stund efter att man har slutat skriva, eftersom
+  // textmodellen tar en stund första gången.
+  const query = text.trim()
+  useEffect(() => {
+    if (!catalog || !query || !catalog.vectors.size) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      try {
+        const [vector] = await textEmbeddings(root, [query])
+        const ids = aiMatches(vector, catalog.vectors, new Set(catalog.indexed.map((image) => image.id)))
+        if (!cancelled) setAi({ text: query, ids, problem: null })
+      } catch (error) {
+        const problem = error instanceof ModelMissingError ? 'AI-modellen saknas i bildbanken.' : 'Något gick fel.'
+        if (!cancelled) setAi({ text: query, ids: [], problem })
+      }
+    }, AI_DELAY)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
     }
-    const key = wordKey(filter.value)
-    return edited.images.filter((image) => edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key))
-  }, [edited, filter])
+  }, [catalog, root, query])
+
+  const result = useMemo(() => {
+    if (!edited) return { images: [], exact: 0, ai: 0 }
+    const key = filter && wordKey(filter.value)
+    const items = edited.images
+      .filter(
+        (image) =>
+          !filter ||
+          (filter.kind === 'place'
+            ? image.place && placeParts(image.place).includes(filter.value)
+            : edited.tags.get(image.id)!.some((other) => wordKey(other.tag) === key)),
+      )
+      .filter((image) => matchesFilters(image, filters))
+      .map((image) => ({ image, tags: edited.tags.get(image.id)! }))
+    if (!query) return { images: items.map((item) => item.image), exact: 0, ai: 0 }
+    const exact = textMatches(items, query, catalog!.vocabulary)
+    const found = new Set(exact.map((image) => image.id))
+    const allowed = new Map(items.map((item) => [item.image.id, item.image]))
+    const fromAi = ai?.text === query ? ai.ids.flatMap((id) => (allowed.has(id) && !found.has(id) ? [allowed.get(id)!] : [])) : []
+    return { images: [...exact, ...fromAi], exact: exact.length, ai: fromAi.length }
+  }, [edited, catalog, filter, filters, query, ai])
+  const shown = result.images
+  const aiPending = !!query && !!catalog?.vectors.size && ai?.text !== query
 
   // Sparar ändringar i användarens egen fil och visar dem direkt.
   async function saveEdits(user: string, edits: Edit[]) {
@@ -180,19 +247,38 @@ export function Library({ root, onChangeFolder }: Props) {
           {state.message}
         </p>
       )}
-      {!admin && catalog && filter && (
+      {!admin && catalog && (
+        <SearchBar text={text} filters={filters} options={options} onText={setText} onFilters={setFilters} />
+      )}
+      {!admin && catalog && (query || filter || filters !== NO_FILTERS) && (
         <div className="filter-bar" role="status">
           <span>
-            {filter.kind === 'tag' ? 'Bilder med taggen' : 'Bilder från'} <strong className="filter-tag">{filter.value}</strong> ·{' '}
-            {shown.length.toLocaleString('sv-SE')}{' '}
-            {shown.length === 1 ? 'bild' : 'bilder'}
+            {filter && (
+              <>
+                {filter.kind === 'tag' ? 'Bilder med taggen' : 'Bilder från'} <strong className="filter-tag">{filter.value}</strong> ·{' '}
+              </>
+            )}
+            {count(shown.length)}
+            {query && ` · ${result.exact.toLocaleString('sv-SE')} med sökorden`}
+            {query && !!result.ai && `, ${result.ai.toLocaleString('sv-SE')} till från AI-sök`}
+            {aiPending && ' · AI-söket letar…'}
+            {query && !aiPending && ai?.problem && ` · AI-söket fungerar inte: ${ai.problem}`}
           </span>
-          <button type="button" onClick={() => setFilter(null)}>
-            Visa alla bilder
-          </button>
+          {filter && (
+            <button type="button" onClick={() => setFilter(null)}>
+              Visa alla bilder
+            </button>
+          )}
         </div>
       )}
-      {!admin && catalog && <Gallery key={filter ? `:` : ''} images={shown} thumbs={catalog.thumbs} onOpen={setSelected} />}
+      {!admin && catalog && (
+        <Gallery
+          key={`${filter?.kind}:${filter?.value}:${query}:${JSON.stringify(filters)}`}
+          images={shown}
+          thumbs={catalog.thumbs}
+          onOpen={setSelected}
+        />
+      )}
       {catalog && selected !== null && shown[selected] && (
         <DetailView
           image={shown[selected]}
