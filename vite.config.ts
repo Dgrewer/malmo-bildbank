@@ -94,6 +94,18 @@ function testdataServer(): Plugin {
 
 export default defineConfig({
   plugins: [react(), contentSecurityPolicy(), testdataServer()],
+  server: {
+    watch: {
+      // Två ändringar av samma fil inom ungefär 100 ms slås annars ihop till en
+      // händelse. Hann sidan hämta filen mellan dem fortsatte servern att lämna
+      // ut den första versionen. Händelsen kommer nu först när filen har legat
+      // still en stund.
+      awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 25 },
+      // Det skrivs mycket i testdata/ och dist/, t.ex. hundratals miniatyrer vid
+      // en import. De behöver inte bevakas.
+      ignored: ['**/testdata/**', '**/dist/**'],
+    },
+  },
   // Workern importeras först när importen startar. Utan listan upptäcker
   // utvecklingsservern beroendena först då och laddar om sidan mitt i importen.
   optimizeDeps: {
