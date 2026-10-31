@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type WheelEvent } from 'react'
+import { useEffect, useRef, useState, type WheelEvent } from 'react'
 import { fileFormat, fileName, formatDuration, isVideo } from '../catalog/fileFormat.ts'
-import { CONSENT_TEXT, formatDate, rightsExpired } from '../catalog/rights.ts'
+import { CONSENT_TEXT, formatTaken } from '../catalog/rights.ts'
 import type { ImageRecord } from '../catalog/types.ts'
 import type { Edit } from '../catalog/edits.ts'
 import { placeParts } from '../catalog/places.ts'
@@ -67,7 +67,6 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
   const [similar, setSimilar] = useState<string | null>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const preview = useObjectUrl(previews, `${image.id}.webp`)
-  const expired = rightsExpired(image)
   const hasPrevious = position > 0
   const hasNext = position < count - 1
 
@@ -85,13 +84,22 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
     else if (event.deltaY < 0 && hasPrevious) onNavigate(position - 1)
   }
 
-  function onKeyDown(event: KeyboardEvent) {
+  // Piltangenterna lyssnas på för hela sidan, så att de fungerar även när fokus
+  // har hamnat utanför dialogen, t.ex. på body.
+  function onKeyDown(event: globalThis.KeyboardEvent) {
     if (event.altKey || event.ctrlKey || event.metaKey || isEditing) return
     if (event.key === 'ArrowLeft' && hasPrevious) onNavigate(position - 1)
     else if (event.key === 'ArrowRight' && hasNext) onNavigate(position + 1)
     else return
     event.preventDefault()
   }
+  const keyHandler = useRef(onKeyDown)
+  keyHandler.current = onKeyDown
+  useEffect(() => {
+    const listener = (event: globalThis.KeyboardEvent) => keyHandler.current(event)
+    document.addEventListener('keydown', listener)
+    return () => document.removeEventListener('keydown', listener)
+  }, [])
 
   return (
     <dialog
@@ -109,7 +117,6 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           setEditing(null)
         }
       }}
-      onKeyDown={onKeyDown}
       onClick={(event) => event.target === dialog.current && dialog.current.close()}
     >
       <div
@@ -188,11 +195,6 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             <strong>Spärrad.</strong> Bilden får inte användas.
           </p>
         )}
-        {expired && (
-          <p className="warning" role="alert">
-            Rättigheterna gick ut {formatDate(image.rightsUntil!)}. Bilden får inte användas.
-          </p>
-        )}
         {isVideo(image.path) && (
           <p className="note">
             Videon kan inte spelas upp i bildbanken.{!image.previewProblem && ' Bilden är en stillbild ur filmen.'}
@@ -241,10 +243,8 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             <dd>{image.byline}</dd>
             <dt>Villkor</dt>
             <dd>{image.terms || 'Inga villkor angivna'}</dd>
-            <dt>Rättigheter till och med</dt>
-            <dd className={expired ? 'expired' : undefined}>
-              {image.rightsUntil ? formatDate(image.rightsUntil) : 'Inget slutdatum'}
-            </dd>
+            <dt>Fotodatum</dt>
+            <dd>{image.takenAt ? formatTaken(image.takenAt) : 'Okänt, filen saknar datum'}</dd>
             <dt>Samtycke</dt>
             <dd>{CONSENT_TEXT[image.consent]}</dd>
             <dt>Plats</dt>

@@ -56,6 +56,7 @@ export interface ImageRecord {
   photographer: string
   byline: string
   terms: string
+  // Används inte längre. Finns kvar så att äldre index går att läsa.
   rightsUntil: string | null
   consent: Consent
   blocked: boolean

@@ -17,7 +17,7 @@ Stegen nedan följer den, plus det som har lagts till under bygget.
 
 - [ ] 5.1 Sökning: en sökruta för taggar, ordlistan (svenska och engelska, svensk ordstamsmatchning), fotograf och filnamn, med exakta träffar först och därefter AI-sök. Filter för fotograf, plats, år och rättigheter.
 - [ ] 5.2 Liknande bilder i detaljvyn, med AI-vektorerna.
-- [x] 5.3 Varningar för utgångna rättigheter och saknat samtycke, och spärrade bilder markerade i rutnät och detaljvy.
+- [x] 5.3 Varning för saknat samtycke, och spärrade bilder markerade i rutnät och detaljvy. Inget rättighetsdatum. Detaljvyn visar fotodatum.
 - [ ] 5.4 Taggning: läs om alla filer i `app-data/edits/` varje minut, så att kollegornas ändringar syns. Ändringshistorik per bild, där en felaktig ändring går att ångra.
 - [ ] 5.4 Logg i Admin: ändringar (från `app-data/edits/`), nya och borttagna bilder (från importerna), med vem och när.
 - [ ] 5.5 Nedladdning till mappen Hämtade bilder (se CLAUDE.md). Spärrade bilder går inte att ladda ner.

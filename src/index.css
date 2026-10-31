@@ -522,10 +522,6 @@ button.primary {
   gap: 0.5rem;
 }
 
-.detail-fields .expired {
-  color: var(--error-text);
-  font-weight: 600;
-}
 
 @media (max-width: 800px) {
   .detail[open] {

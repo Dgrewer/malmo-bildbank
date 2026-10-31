@@ -40,12 +40,13 @@ Indexformatet beskrivs i `docs/index-format.md`. Det som återstår att bygga st
 
 ## Rättigheter
 
-- Villkor, rättighetsdatum, samtycke och spärr ställs in i appen. Det finns ingen adminroll: alla användare kan ändra dem.
+- Villkor, samtycke och spärr ställs in i appen. Det finns ingen adminroll: alla användare kan ändra dem.
+- Det finns inget rättighetsdatum. Fältet `rightsUntil` finns kvar i indexet för äldre index men visas inte och påverkar ingenting.
+- Detaljvyn visar fotodatum (tagningstiden ur EXIF).
 - De kan sättas på två nivåer: för en fotografmapp (`original/<fotograf>/`) och för ett enskilt foto. Fotots inställning går före mappens.
 - Ändringar sparas som alla andra ändringar, i användarens egen fil i `app-data/edits/`.
 - Om två användare har ändrat samma sak gäller den senaste ändringen.
 - Samtycke har tre värden: `given` (finns), `missing` (saknas, appen varnar) och `not-required` (behövs inte).
-- Utgångna rättigheter ger en gul varning. Bilden spärras inte automatiskt.
 - Spärrade bilder markeras tydligt i både rutnät och detaljvy.
 
 ## Filformat

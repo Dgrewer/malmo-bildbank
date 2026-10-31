@@ -44,7 +44,6 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }:
     photographer: image.photographer,
     byline: image.byline,
     terms: image.terms,
-    rightsUntil: image.rightsUntil,
     consent: image.consent,
     blocked: image.blocked,
     place: image.place,
@@ -148,14 +147,6 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }:
       <label>
         Villkor
         <textarea rows={2} value={values.terms} onChange={(event) => set('terms', event.target.value)} />
-      </label>
-      <label>
-        Rättigheter till och med
-        <input
-          type="date"
-          value={values.rightsUntil ?? ''}
-          onChange={(event) => set('rightsUntil', event.target.value || null)}
-        />
       </label>
       <label>
         Samtycke

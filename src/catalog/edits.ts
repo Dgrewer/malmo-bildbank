@@ -12,14 +12,13 @@ export interface FieldValues {
   photographer: string
   byline: string
   terms: string
-  rightsUntil: string | null
   consent: Consent
   blocked: boolean
   place: Place | null
 }
 
 export type Field = keyof FieldValues
-export const FIELDS: Field[] = ['photographer', 'byline', 'terms', 'rightsUntil', 'consent', 'blocked', 'place']
+export const FIELDS: Field[] = ['photographer', 'byline', 'terms', 'consent', 'blocked', 'place']
 
 export type Edit = { at: string; by: string; id: string } & (
   | { [F in Field]: { field: F; value: FieldValues[F] } }[Field]
@@ -47,8 +46,6 @@ function validValue(field: string, value: unknown): boolean {
     case 'byline':
     case 'terms':
       return typeof value === 'string'
-    case 'rightsUntil':
-      return value === null || (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
     case 'consent':
       return CONSENTS.includes(value as Consent)
     case 'blocked':
