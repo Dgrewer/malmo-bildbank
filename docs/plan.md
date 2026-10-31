@@ -44,7 +44,7 @@ Stegen nedan följer den, plus det som har lagts till under bygget.
 
 ## Steg 7 – Testa slutprodukten
 
-- [ ] Städa testdata: ta bort make-testdata, och sharp om inget annat använder det. Behåll `testdata/app-data/models`. RAW-paret får ett eget foto i stället för en kopia av Knutssalen.
+- [ ] Städa testdata: ta bort make-testdata, och sharp om inget annat använder det. Behåll `testdata/app-data/models`. RAW-paret får ett eget foto i stället för en kopia av Knutssalen. Testet skapar själv ett dubblettpar (samma namn och tagningstid), så att flytten till `app-data/dubbletter/` alltid testas.
 - [ ] Slutrapport: en full import utan externa anrop och utan CSP-fel, och instruktioner för manuell test enligt checklistan i steg 7 i bygginstruktionen.
 
 ## Senare
