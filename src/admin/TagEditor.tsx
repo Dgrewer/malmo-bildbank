@@ -138,13 +138,15 @@ const without = (list: string[] | undefined, id: string) => {
 
 export async function load(bank: FileSystemDirectoryHandle): Promise<Loaded> {
   if (!(await hasModel(bank))) {
-    throw new Error(`AI-modellen saknas i app-data/models/${MODEL.name}. Kör npm run download-model och importera.`)
+    throw new Error(
+      `AI-modellen saknas i app-data/models/${MODEL.name}. Utan den fungerar inte AI-taggarna. Be den som sköter bildbanken att lägga in den.`,
+    )
   }
   const index = await readIndexFile(bank)
   const file = await readFile(bank, 'app-data/embeddings.bin')
   const imageVectors = file && decodeVectors(await file.arrayBuffer(), MODEL.dimensions)
   if (!index || !imageVectors?.size) {
-    throw new Error('Bilderna har inga AI-vektorer än. Importera bilderna först, under Importera bilder.')
+    throw new Error('AI:n har inte analyserat bilderna än. Importera bilderna först, under Importera bilder.')
   }
   const configFile = await readFile(bank, 'app-data/config.json')
   const config = configFile ? parseConfig(await configFile.text()).config : DEFAULT_CONFIG
@@ -449,17 +451,17 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
     <section className="tag-editor">
       <div className="note tag-help">
         <p>
-          AI-taggarna sätts automatiskt. AI:n jämför varje bild med taggens beskrivning, eller med exempelbilder, och
-          ger ett värde för hur väl de stämmer. Bilder med ett värde över <strong>gränsen</strong> får taggen.
+          AI:n jämför varje bild med taggens beskrivning eller exempelbilder. Bilder som liknar tillräckligt, över{' '}
+          <strong>gränsen</strong>, får taggen.
         </p>
         <p>
-          Välj en tagg och flytta reglaget. Bilderna och antalet ändras direkt, men det är bara en förhandsvisning.
-          Bildbanken ändras först när du trycker <strong>Spara ändringar</strong>.
+          Välj en tagg och flytta reglaget. Det du ändrar här är en förhandsvisning tills du trycker{' '}
+          <strong>Spara ändringar</strong>.
         </p>
         <p>
-          Har en bild fått en tagg som inte stämmer, tryck <strong>Inte rätt</strong> under bilden. Känner AI:n inte igen
-          en byggnad eller plats, tryck <strong>Exempel</strong> under några bilder som visar den. Taggarna gäller för alla som använder bildbanken, och nya bilder
-          taggas automatiskt när de importeras. Varje rättning gör alltså bildbanken bättre för alla.
+          Tryck <strong>Inte rätt</strong> under en bild som har fått fel tagg. Känner AI:n inte igen en byggnad eller
+          plats, tryck <strong>Exempel</strong> under några bilder som visar den. Ändringarna gäller för alla, även för
+          bilder som importeras senare. Taggar som bara har satts i Redigera visas inte här än.
         </p>
       </div>
 
@@ -484,7 +486,7 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
         {saving && (
           <span role="status">
             Sparar
-            {saving.total > 0 && ` – räknar ut nya beskrivningar, ${count(saving.done)} av ${count(saving.total)}`}…
+            {saving.total > 0 && ` – AI:n läser nya beskrivningar, ${count(saving.done)} av ${count(saving.total)}`}…
           </span>
         )}
         {!saving && dirty && (
@@ -500,10 +502,9 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
         )}
       </div>
       <p className="tag-explain" id="defaults-help">
-        <strong>Återställ förvalda taggar</strong> ger taggarna som följer med bildbanken (som ”flygbild” och ”bro”)
-        tillbaka sina ursprungliga beskrivningar och gränser, och lägger tillbaka förvalda taggar som har tagits bort.
-        Taggar ni har lagt till själva, taggar med exempelbilder och bilder markerade som <strong>Inte rätt</strong>{' '}
-        ändras inte. Inget ändras i bildbanken förrän du trycker Spara ändringar, och Ångra ändringar tar bort det.
+        <strong>Återställ förvalda taggar</strong> ger de förvalda taggarna, som ”flygbild” och ”bro”, tillbaka sina
+        ursprungliga beskrivningar och gränser. Förvalda taggar som har tagits bort kommer tillbaka. Egna taggar,
+        exempelbilder och <strong>Inte rätt</strong> ändras inte.
       </p>
       <label className="tag-option">
         <input
@@ -514,7 +515,7 @@ export function TagEditor({ bank, onSaved, onBusy, onUnsaved }: Props) {
         />
         <span>
           <strong>Minst en tagg per bild.</strong> En bild som inte når gränsen för någon tagg får ändå den tagg den
-          ligger närmast. Då har alla bilder minst en AI-tagg, men den kan oftare vara fel.
+          ligger närmast. Då har alla bilder minst en AI-tagg, men den är oftare fel.
         </span>
       </label>
       {problems.length > 0 && (
@@ -822,25 +823,25 @@ function TagDetail({
           />
           {nameTaken ? (
             <small className="error" role="alert">
-              Det finns redan en tagg som heter ”{draft.tag.trim()}”. Fältet byter namn på den här taggen. Leta efter
-              taggar i sökfältet till vänster.
+              Det finns redan en tagg som heter ”{draft.tag.trim()}”. Välj ett annat namn, eller sök fram den andra
+              taggen till vänster.
             </small>
           ) : (
             <small>
-              Ordet som visas i bildbanken och går att söka på. Ändrar du det här byter taggen namn.
+              Visas i bildbanken. Ändrar du ordet byter taggen namn.
               {savedName && savedName !== draft.tag.trim() && ` Den hette ”${savedName}”.`}
             </small>
           )}
         </label>
         {!nameTaken && similar.length > 0 && (
           <p className="warning similar-tags" role="status">
-            Det finns redan en liknande tagg:{' '}
+            Det finns en liknande tagg:{' '}
             {similar.map((tag) => (
               <button key={tag} type="button" className="chip" onClick={() => onSelect(tag)}>
                 {tag}
               </button>
             ))}{' '}
-            Använd hellre den, eller lägg till ditt ord som ett annat ord för den, så att alla taggar samma sak.
+            Använd hellre den, så att alla taggar likadant. Ditt ord kan stå under Andra ord för samma sak.
           </p>
         )}
         <label>
@@ -853,15 +854,15 @@ function TagDetail({
           />
           <small>
             {byExamples
-              ? 'Används inte så länge taggen har exempelbilder.'
-              : 'AI:n förstår engelska bäst. Börja gärna med ”a photo of”, t.ex. ”a photo of a bicycle”. Två taggar med samma beskrivning och gräns hamnar på samma bilder, som solnedgång och soluppgång.'}
+              ? 'Används inte när taggen har exempelbilder.'
+              : 'Skriv på engelska, gärna som ”a photo of a bicycle”. Två taggar med samma beskrivning och gräns får samma bilder.'}
           </small>
         </label>
       </div>
 
       <WordList
         title="Andra ord för samma sak"
-        explain="Synonymer, engelska ord och vanliga felstavningar, t.ex. ”turningtorso” för Turning Torso. Bilder vars nyckelord är något av orden visas med den här taggen, och skriver någon ordet föreslås den här taggen."
+        explain="Synonymer, engelska ord och felstavningar, t.ex. ”turningtorso” för Turning Torso. Står ordet i en bildfil visas bilden med den här taggen. Orden blir inte egna taggar."
         words={draft.synonyms ?? []}
         placeholder="Lägg till ord"
         disabled={disabled}
@@ -874,7 +875,7 @@ function TagDetail({
       />
       <WordList
         title="Hör ihop med"
-        explain="Taggar som ska visas tillsammans, t.ex. restaurang och kafé, eller slott och Malmöhus. Har en bild den ena taggen visas den med alla i gruppen. Ett ord som inte är en tagg blir en tagg. Hellre en tagg för mycket än för lite: en felaktig tagg tas bort på bilden."
+        explain="Taggar som ska visas tillsammans, t.ex. restaurang och kafé, eller slott och Malmöhus. Har en bild en av taggarna får den alla. Ett nytt ord blir en ny tagg. Är en tagg fel på en bild tar du bort den där."
         words={(vocabulary.groups.get(draft.tag.trim()) ?? []).filter((name) => name !== draft.tag.trim())}
         placeholder="Lägg till tagg"
         list="tag-name-list"
@@ -895,10 +896,9 @@ function TagDetail({
       <div className="tag-examples">
         <h4>Exempelbilder</h4>
         <p className="tag-explain">
-          Klicka på <strong>Exempel</strong> under en bild som visar motivet. Med exempelbilder letar AI:n efter bilder
-          som liknar dem i stället för att läsa beskrivningen. Det fungerar bra för byggnader och platser som AI:n inte
-          känner igen med namn, t.ex. Malmöhus, Triangeln eller Centralstationen. Nya bilder som importeras får taggen
-          automatiskt.
+          Klicka på <strong>Exempel</strong> under en bild som visar motivet. AI:n letar då efter bilder som liknar
+          exemplen, i stället för att läsa beskrivningen. Det passar för byggnader och platser som AI:n inte känner
+          igen, t.ex. Malmöhus eller Triangeln.
         </p>
         {byExamples && (
           <ul className="tag-thumbs">
@@ -985,9 +985,8 @@ function TagDetail({
         <div className="tag-wrong">
           <h4>Inte rätt ({count(wrong.length)})</h4>
           <p className="tag-explain">
-            De här bilderna får aldrig taggen, och inte heller bilder som är nästan likadana, t.ex. andra bilder i samma
-            serie. Det gäller även bilder som importeras senare. Tryck <strong>Ångra</strong> om en bild ska kunna få
-            taggen igen.
+            Bilderna här, och bilder som är nästan likadana, får aldrig taggen. Det gäller även bilder som importeras
+            senare. Tryck <strong>Ångra</strong> om en bild ska kunna få taggen igen.
           </p>
           <ul className="tag-thumbs">
             {wrong.map((item) => (
@@ -1272,13 +1271,13 @@ function ImagesView({
           : `${count(all.length)} bilder.`}
       </p>
       <p className="tag-explain">
-        Under varje bild står taggarna den får. Klicka på en tagg som är fel: den blir röd med ett kryss. Klicka igen
-        för att ta bort den från bilden. Skriv i fältet under bilden för att lägga till en tagg. Nästan likadana
-        bilder, t.ex. andra bilder i samma serie, följer med. Inget ändras förrän du trycker Spara ändringar.
+        Under varje bild står taggarna den får. Klicka på en tagg som är fel, och klicka igen för att ta bort den. Skriv
+        i fältet under bilden för att lägga till en tagg. Nästan likadana bilder följer med. Inget ändras förrän du
+        trycker Spara ändringar.
         {onlyUntagged &&
           (drafts.atLeastOneTag
-            ? ' Bilderna här når inte gränsen för någon tagg, så de får den tagg de ligger närmast, märkt ”närmast”. Den kan bytas om taggarna ändras. Stämmer taggen: klicka på namnet, så blir det grönt och taggen behålls. Är den fel: klicka på krysset, så blir det rött och taggen tas bort. Bilden ligger kvar här och visar ditt val tills du sparar. Klicka på samma del igen för att ångra.'
-            : ' Slå på Minst en tagg per bild om alla bilder ska få minst en tagg.')}
+            ? ' Bilderna här får den tagg de ligger närmast, märkt ”närmast”. Klicka på namnet om taggen stämmer, eller på krysset om den är fel. Klicka igen för att ångra.'
+            : ' Slå på Minst en tagg per bild om alla bilder ska få en tagg.')}
       </p>
       <datalist id="tag-name-list">
         {names.map((name) => (
@@ -1573,8 +1572,8 @@ function TagPlace({
     <div className="word-list tag-place">
       <h4>Plats</h4>
       <p className="tag-explain">
-        Torget eller parken där motivet finns, t.ex. Stortorget för Malmö rådhus. Bilder med taggen som saknar GPS får
-        platsen. Har bilden GPS i samma delområde men inget torg eller park, får den platsens namn.
+        Torget eller parken där motivet finns, t.ex. Stortorget för Malmö rådhus. Bilder med taggen får platsen om de
+        saknar GPS, eller om GPS:en visar samma delområde.
       </p>
       {place ? (
         <p className="tag-place-current">
@@ -1719,9 +1718,9 @@ function KeywordsView({
     <div className="tag-detail keywords-view">
       <h4>Okända nyckelord</h4>
       <p className="tag-explain">
-        Nyckelord som fotografen eller bildbyrån har skrivit in i bildfilerna, och som inte finns i ordlistan. De visas
-        som taggar som de är. Koppla ett ord till en tagg, t.ex. ”fountain” till fontän, så visas bilderna med den
-        taggen. Dölj ord som inte säger något om bilden. Inget ändras förrän du trycker Spara ändringar.
+        Ord som fotografen har skrivit in i bildfilerna och som inte finns bland taggarna. De visas som taggar som de
+        är. Koppla ett ord till en tagg, t.ex. ”fountain” till fontän, eller dölj ord som inte säger något om bilden.
+        Inget ändras förrän du trycker Spara ändringar.
       </p>
       <p className="tag-hits" role="status">
         {count(unknown.length)} okända nyckelord.

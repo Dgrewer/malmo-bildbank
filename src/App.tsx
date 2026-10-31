@@ -91,7 +91,7 @@ function App() {
         <p>Startar…</p>
       ) : (
         <>
-          <p>Välj bildbankens mapp, den synkade SharePoint-mappen som innehåller original och app-data.</p>
+          <p>Välj bildbankens mapp. Det är den synkade SharePoint-mappen med mapparna original och app-data.</p>
           {state.error && (
             <p className="error" role="alert">
               {state.error}

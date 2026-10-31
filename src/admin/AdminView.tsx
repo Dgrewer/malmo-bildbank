@@ -29,17 +29,19 @@ type State =
 
 const PHASE_TEXT: Record<Phase, string> = {
   scan: 'Letar efter bilder',
-  hash: 'Räknar fingeravtryck',
+  hash: 'Jämför filerna',
   import: 'Importerar',
-  ai: 'Räknar ut AI-vektorer',
+  ai: 'AI:n analyserar bilderna',
   tags: 'Sätter AI-taggar',
   copy: 'Kopierar original',
-  save: 'Sparar index',
+  save: 'Sparar',
 }
 
 const DUPLICATES_TITLE = 'Dubbletter med samma namn och tagningstid, togs inte med'
 
 const count = (n: number) => n.toLocaleString('sv-SE')
+// "1 bild", "3 bilder".
+const images = (n: number) => `${count(n)} ${n === 1 ? 'bild' : 'bilder'}`
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -276,7 +278,7 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
         <div>
           <h3>Bildbanksmapp</h3>
           <p>
-            <strong>{bank.name}</strong>. Index, miniatyrer och förhandsbilder sparas i app-data.
+            <strong>{bank.name}</strong>. Miniatyrer, taggar och annat som appen behöver sparas i app-data.
           </p>
         </div>
         <div className="originals">
@@ -366,11 +368,11 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
         <section className="import-result">
           <p role="status">
             {state.phase === 'import'
-              ? `Importen avbröts efter ${count(state.done)} av ${count(state.total)} bilder. Det som är klart är sparat och fortsätter nästa gång.`
+              ? `Importen avbröts efter ${count(state.done)} av ${images(state.total)}. Det som är klart är sparat, och importen fortsätter där den slutade.`
               : state.phase === 'ai'
-                ? `Importen avbröts när AI-vektorer för ${count(state.done)} av ${count(state.total)} bilder var klara. Det som är klart är sparat och fortsätter nästa gång.`
+                ? `Importen avbröts när AI:n hade analyserat ${count(state.done)} av ${images(state.total)}. Det som är klart är sparat, och importen fortsätter där den slutade.`
                 : state.phase === 'tags'
-                  ? 'Importen avbröts när AI-taggarna sattes. Bilderna och AI-vektorerna är sparade och fortsätter nästa gång.'
+                  ? 'Importen avbröts när AI-taggarna sattes. Bilderna är sparade, och importen fortsätter där den slutade.'
                   : 'Sökningen avbröts. Inget har ändrats.'}
           </p>
           <div className="actions">
@@ -384,8 +386,8 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
       {state.kind === 'done' && (
         <section className="import-result">
           <p role="status">
-            Importen är klar. {count(state.result.processed)} bilder importerades eller uppdaterades. Bildbanken har{' '}
-            {count(state.result.total)} bilder.
+            Importen är klar. {images(state.result.processed)} importerades eller uppdaterades. Bildbanken har{' '}
+            {images(state.result.total)}.
           </p>
           <PathList
             title={DUPLICATES_TITLE}
@@ -399,12 +401,11 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
                   : '. Ligger kvar i originalmappen.')
             }
           />
-          {state.result.ai.model && (
+          {state.result.ai.model && state.result.ai.computed > 0 && (
             <p className="ai-result">
-              {count(state.result.ai.computed)} nya AI-vektorer
-              {state.result.ai.device === 'webgpu' && ', uträknade med grafikkortet'}
-              {state.result.ai.device === 'wasm' && ', uträknade utan grafikkort (långsammare)'}.{' '}
-              {count(state.result.ai.total)} bilder kan hittas med AI-sök.
+              AI:n analyserade {images(state.result.ai.computed)}
+              {state.result.ai.device === 'webgpu' && ', med grafikkortet'}
+              {state.result.ai.device === 'wasm' && ', utan grafikkort (långsammare)'}.
             </p>
           )}
           {state.result.ai.problem && (
@@ -414,15 +415,15 @@ export function AdminView({ bank, onClose, onSaved }: Props) {
           )}
           {state.result.ai.model && !state.result.tags.problem && (
             <p className="tags-result">
-              {state.result.tags.created && `app-data/config.json skapades med ${count(state.result.tags.tags)} förvalda taggar. `}
+              {state.result.tags.created && `Bildbanken fick ${count(state.result.tags.tags)} förvalda AI-taggar. `}
               {state.result.tags.retagged && `AI-taggarna sattes med ${count(state.result.tags.tags)} taggar. `}
-              {count(state.result.tags.tagged)} bilder har AI-taggar.
+              {images(state.result.tags.tagged)} har AI-taggar.
             </p>
           )}
           {state.result.tags.skipped > 0 && (
             <p className="warning" role="alert">
-              {count(state.result.tags.skipped)} taggar i app-data/config.json saknar tag, prompt eller threshold, eller
-              finns redan. De användes inte.
+              {state.result.tags.skipped === 1 ? '1 AI-tagg' : `${count(state.result.tags.skipped)} AI-taggar`} i
+              app-data/config.json saknar namn, beskrivning eller gräns, eller finns två gånger. De användes inte.
             </p>
           )}
           {state.result.tags.problem && (
@@ -479,27 +480,26 @@ function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
       )}
       {summary.resumed > 0 && (
         <p className="note">
-          {count(summary.resumed)} bilder blev klara i en avbruten import och behöver inte göras om.
+          {images(summary.resumed)} blev {summary.resumed === 1 ? 'klar' : 'klara'} i en avbruten import och behöver
+          inte göras om.
         </p>
       )}
       {summary.ai.model ? (
         <>
           {summary.ai.missing > 0 && (
             <p className="note ai-note">
-              {count(summary.ai.missing)} bilder får AI-vektorer för AI-sök. Med grafikkort tar det några tiondels
-              sekunder per bild, utan grafikkort några sekunder.
+              AI:n analyserar {images(summary.ai.missing)}. Det tar under en sekund per bild med grafikkort, och några
+              sekunder utan.
             </p>
           )}
           {summary.ai.retag && (
-            <p className="note ai-note">
-              Alla bilder får nya AI-taggar från app-data/config.json, eftersom taggarna är nya eller har ändrats.
-            </p>
+            <p className="note ai-note">Alla bilder får nya AI-taggar, eftersom AI-taggarna har ändrats.</p>
           )}
         </>
       ) : (
         <p className="warning ai-note">
-          AI-modellen saknas i app-data/models/{MODEL.name}. Bilderna importeras, men kan inte hittas med AI-sök förrän
-          modellen finns och importen har körts igen.
+          AI-modellen saknas i app-data/models/{MODEL.name}. Bilderna importeras ändå, men får inga AI-taggar förrän
+          modellen finns och du har importerat igen.
         </p>
       )}
       <ul className="change-counts">
@@ -530,8 +530,8 @@ function Preview({ summary, onImport, onRescan, children }: PreviewProps) {
       {removing > 0 && (
         <div className="warning remove-warning" role="alert">
           <p>
-            {count(removing)} av {count(total)} bilder i bildbanken finns inte i originalmappen och tas bort ur
-            bildbanken, med sina taggar och rättigheter.
+            {count(removing)} av {images(total)} i bildbanken finns inte i originalmappen och tas bort ur bildbanken,
+            med sina taggar, villkor och spärrar.
             {removing === total && ' Det är alla bilder. Kontrollera att du har valt rätt originalmapp.'}
           </p>
           <label>

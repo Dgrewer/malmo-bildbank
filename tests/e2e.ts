@@ -969,13 +969,13 @@ try {
   await test('4.1 sökningen kan avbrytas och fortsätta', async () => {
     importPage = await openPage(`/?testdata&originals&fresh&name=${bank}`)
     const page = importPage
-    await waitForText(page, 'Hittar inte app-data/index.json', 600_000)
+    await waitForText(page, 'Bildbanken har inga bilder än', 600_000)
     await clickButton(page, 'Admin')
     // Bildbankens egen mapp väljs automatiskt.
     await waitForText(page, `Bildbankens egen mapp ${bank} › Original`)
     assert(!(await page.$('::-p-text(Använd bildbankens egen mapp)')), 'Knappen för bildbankens egen mapp visas fast den redan är vald')
     await clickButton(page, 'Sök efter ändringar')
-    await waitForText(page, 'Räknar fingeravtryck')
+    await waitForText(page, 'Jämför filerna')
     await clickButton(page, 'Avbryt')
     await waitForText(page, 'Sökningen avbröts. Inget har ändrats.')
     await clickButton(page, 'Fortsätt')
@@ -1031,18 +1031,18 @@ try {
 
     await clickButton(page, 'Fortsätt')
     await waitForPreview(page)
-    await waitForText(page, 'bilder blev klara i en avbruten import')
+    await waitForText(page, 'i en avbruten import och behöver inte göras om')
     await clickButton(page, 'Fortsätt importen')
-    // Avbryt igen när AI-vektorer för minst 10 bilder är klara.
+    // Avbryt igen när AI:n har analyserat minst 10 bilder.
     await page.waitForFunction(
       () => {
-        const match = document.querySelector('.import-progress p')?.textContent?.match(/AI-vektorer – (\d+) av/)
+        const match = document.querySelector('.import-progress p')?.textContent?.match(/AI:n analyserar bilderna – (\d+) av/)
         return match && Number(match[1]) >= 10
       },
       { timeout: 600_000, polling: 100 },
     )
     await clickButton(page, 'Avbryt')
-    await waitForText(page, 'Importen avbröts när AI-vektorer', 60_000)
+    await waitForText(page, 'Importen avbröts när AI:n hade analyserat', 60_000)
     const afterAiAbort = await bankProblems(page, bank)
     assert(!afterAiAbort.problems.length, afterAiAbort.problems.slice(0, 5).join('\n      '))
     assert(!afterAiAbort.index, 'index.json skrevs fast importen avbröts')
@@ -1242,7 +1242,7 @@ try {
     await waitForText(page, 'Alla bilder får nya AI-taggar')
     await clickButton(page, 'Starta import')
     await waitForText(page, 'AI-taggarna sattes med 2 taggar', 300_000)
-    await waitForText(page, '1 taggar i app-data/config.json saknar')
+    await waitForText(page, '1 AI-tagg i app-data/config.json saknar')
     const index = JSON.parse((await readOpfs(page, `${bank}/app-data/index.json`))!) as IndexFile
     assert(index.aiTagging && index.aiTagging.config !== firstIndex!.aiTagging!.config, 'aiTagging ändrades inte')
     // Båda taggarna har samma beskrivning, så det finns en textvektor.
@@ -1273,7 +1273,7 @@ try {
       await viewer.locator('.gallery-cell[data-index="0"]').click()
       await viewer.waitForSelector('dialog.detail[open] .detail-tags button.ai', { timeout: 10_000 })
       const shown = await viewer.$eval('dialog.detail[open] .detail-tags', (element) => (element as HTMLElement).innerText)
-      assert(shown.includes('alla') && shown.includes('Streckade taggar har AI:n satt'), `Detaljvyn visar taggarna så här: ${shown}`)
+      assert(shown.includes('alla') && shown.includes('Streckade taggar har satts automatiskt'), `Detaljvyn visar taggarna så här: ${shown}`)
       await screenshot(viewer, '4.5-ai-taggar')
       await step('Taggen alla i detaljvyn', viewer.locator('dialog.detail[open] .detail-tags button::-p-text(alla)').click())
       const withAll = index.images.filter((image) => image.aiTags.includes('alla')).length
@@ -2116,7 +2116,7 @@ try {
     )
     await clickButton(page, 'Sök efter ändringar')
     const { counts } = await waitForPreview(page)
-    await waitForText(page, '1 bilder blev klara i en avbruten import')
+    await waitForText(page, '1 bild blev klar i en avbruten import')
     assert(counts.new === 0, `Den redan klara bilden räknas som ny: ${JSON.stringify(counts)}`)
     assert(counts.removed === 0, `Posten från en annan mapp räknas som borttagen: ${JSON.stringify(counts)}`)
     // Uppstädningen visas.
@@ -2156,7 +2156,7 @@ try {
     // RAW-par och en fil vars namn redan finns i bildbankens original/.
     // Utan AI-modell: importen fungerar ändå, utan AI-vektorer.
     const page = await openPage('/?testdata&fresh&nomodel&name=kopiabank')
-    await waitForText(page, 'Hittar inte app-data/index.json', 120_000)
+    await waitForText(page, 'Bildbanken har inga bilder än', 120_000)
     await page.evaluate(async () => {
       const opfs = await navigator.storage.getDirectory()
       await opfs.removeEntry('externa', { recursive: true }).catch(() => {})

@@ -278,7 +278,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
                   <TagList tags={tags} onTag={onTag} />
                   <span className="tags-note">
                     {onTag && 'Klicka på en tagg för att se alla bilder med den.'}
-                    {tags.some((tag) => tag.ai) && ' Streckade taggar har AI:n satt, och de kan vara fel.'}
+                    {tags.some((tag) => tag.ai) && ' Streckade taggar har satts automatiskt och kan vara fel.'}
                   </span>
                 </>
               ) : (

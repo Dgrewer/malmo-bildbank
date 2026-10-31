@@ -79,7 +79,9 @@ function rows(output: Tensor): Float32Array[] {
 }
 
 function missing(): ModelMissingError {
-  return new ModelMissingError(`AI-modellen saknas i ${MODELS_PATH}${MODEL.name}. Kör npm run download-model.`)
+  return new ModelMissingError(
+    `AI-modellen saknas i ${MODELS_PATH}${MODEL.name}. Utan den fungerar inte AI-taggarna. Be den som sköter bildbanken att lägga in den.`,
+  )
 }
 
 export type Device = 'webgpu' | 'wasm'

@@ -106,9 +106,9 @@ export function SameImages({ bank, originals }: Props) {
   async function move(file: FileHash, kept: FileHash) {
     let result: { to: string } | { error: string }
     try {
-      if (!originals) throw new Error('Välj mappen som bilderna läses från under Importera bilder.')
+      if (!originals) throw new Error('Välj först mappen som bilderna läses från, under Importera bilder.')
       if ((await originals.requestPermission({ mode: 'readwrite' })) !== 'granted') {
-        throw new Error('Appen fick inte ändra i originalmappen.')
+        throw new Error('Appen fick inte ändra i originalmappen. Försök igen och välj Tillåt.')
       }
       result = { to: await moveDuplicate(bank, originals, file, kept) }
     } catch (error) {
@@ -120,18 +120,15 @@ export function SameImages({ bank, originals }: Props) {
   return (
     <section className="same-images">
       <p className="tag-explain">
-        Filerna i varje grupp har exakt samma innehåll men olika namn och finns som olika bilder i bildbanken. Vanliga
-        kopior importeras redan bara en gång, och resten visas under Importera bilder, Sök efter ändringar. Här syns de
-        som importen inte ser: en RAW-fil eller JPG:en bredvid den som är samma fil som en annan bild. Ingenting flyttas
-        automatiskt. Klicka på en miniatyr för att se bilden. <strong>Flytta bort</strong> flyttar filen till
-        app-data/dubbletter/ och loggar flytten, så att den går att ångra. Taggar och rättigheter hör till id:t, så
-        behåll helst den med lägst id. Bara exakta kopior hittas: en bild som har beskurits, förminskats eller
-        redigerats räknas inte.
+        Här visas filer som är exakt samma bild men har olika namn, t.ex. JPG:en i ett RAW-par som också finns som en
+        egen bild. Klicka på en miniatyr för att se bilden. <strong>Flytta bort</strong> flyttar filen till
+        app-data/dubbletter/, så att det går att ångra. Behåll helst bilden med lägst id, eftersom taggarna hör till
+        id:t. En bild som har beskurits eller ändrats räknas inte som samma bild.
       </p>
       {state.unread > 0 && (
         <p className="warning" role="alert">
-          {count(state.unread)} RAW-par gick inte att läsa och är inte med. Välj mappen som bilderna läses från under
-          Importera bilder.
+          {count(state.unread)} RAW-par gick inte att läsa och är inte med. Kontrollera mappen under Importera bilder,
+          Bilderna läses från.
         </p>
       )}
       <p role="status">
@@ -141,8 +138,7 @@ export function SameImages({ bank, originals }: Props) {
       </p>
       {[...moves.values()].some((result) => 'to' in result) && (
         <p className="note" role="status">
-          Flyttade filer finns kvar i bildbanken tills du kör <strong>Sök efter ändringar</strong> och importerar under
-          Importera bilder.
+          Flyttade bilder försvinner ur bildbanken nästa gång du importerar.
         </p>
       )}
       {state.groups.map((group) => (

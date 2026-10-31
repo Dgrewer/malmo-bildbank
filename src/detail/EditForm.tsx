@@ -133,7 +133,7 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }:
         <label>
           Ditt namn
           <input type="text" value={user} required autoComplete="name" onChange={(event) => setUser(event.target.value)} />
-          <small>Dina ändringar sparas i app-data/edits/ under ditt namn. Namnet sparas på den här datorn.</small>
+          <small>Ändringarna sparas med ditt namn, så att andra ser vem som har ändrat. Datorn kommer ihåg namnet.</small>
         </label>
       )}
       <label>
@@ -227,9 +227,10 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }:
         />
         {onSimilar && shown.added.length > 0 && (
           <div className="similar-buttons">
+            <small>Liknande bilder får också taggen när du sparar. Du kan välja bilderna själv:</small>
             {shown.added.map((tag) => (
               <button key={tag} type="button" className="similar-button" disabled={saving} onClick={() => onSimilar(tag)}>
-                Sätt ”{tag}” på liknande bilder
+                Välj bilder för ”{tag}”
               </button>
             ))}
           </div>

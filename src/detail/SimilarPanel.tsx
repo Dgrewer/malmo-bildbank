@@ -134,7 +134,7 @@ export function SimilarPanel({ bank, image, tag, onSaved, onClose }: Props) {
     return (
       <section className="similar-panel" aria-label={`${tag} på liknande bilder`}>
         {header}
-        {state.kind === 'loading' && <p className="status">Läser AI-vektorerna…</p>}
+        {state.kind === 'loading' && <p className="status">Letar efter liknande bilder…</p>}
         {state.kind === 'error' && (
           <p className="warning" role="alert">
             {state.message}
@@ -142,7 +142,7 @@ export function SimilarPanel({ bank, image, tag, onSaved, onClose }: Props) {
         )}
         {state.kind === 'prompt' && (
           <p className="warning" role="alert">
-            ”{tag}” är redan en AI-tagg som AI:n sätter utifrån en beskrivning. Ändra den under Admin, AI-taggar.
+            ”{tag}” är redan en AI-tagg som bygger på en beskrivning. Du ändrar den i Admin, under AI-taggar.
           </p>
         )}
       </section>
@@ -171,9 +171,8 @@ export function SimilarPanel({ bank, image, tag, onSaved, onClose }: Props) {
     <section className="similar-panel" aria-label={`${tag} på liknande bilder`}>
       {header}
       <p className="tag-explain">
-        AI:n letar efter bilder som liknar exempelbilderna. Dra i reglaget tills rätt bilder är med. Tryck{' '}
-        <strong>Inte rätt</strong> under en bild som inte ska ha taggen, och <strong>Exempel</strong> under en bra träff
-        så blir träffarna bättre. Ingenting sparas förrän du trycker <strong>Spara AI-taggen</strong>.
+        Dra i reglaget tills rätt bilder får taggen. Tryck <strong>Inte rätt</strong> under en bild som är fel, och{' '}
+        <strong>Exempel</strong> under en bra träff. Inget sparas förrän du trycker <strong>Spara AI-taggen</strong>.
       </p>
 
       <h4>Exempelbilder</h4>
@@ -185,7 +184,7 @@ export function SimilarPanel({ bank, image, tag, onSaved, onClose }: Props) {
           })}
         </ul>
       ) : (
-        <p className="warning">Välj minst en exempelbild, annars vet AI:n inte vad den ska leta efter.</p>
+        <p className="warning">Välj minst en exempelbild. Annars vet AI:n inte vad den ska leta efter.</p>
       )}
 
       {byExamples && (
