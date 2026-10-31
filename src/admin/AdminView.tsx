@@ -11,6 +11,8 @@ interface Props {
   // Bildbankens mapp, den som innehåller original och app-data.
   bank: FileSystemDirectoryHandle
   onClose: (changed: boolean) => void
+  // Anropas när en import eller AI-taggarna har sparats, så att bilderna läses om.
+  onSaved: () => Promise<void>
 }
 
 type Originals =
@@ -64,7 +66,7 @@ function PathList({ title, items, render }: { title: string; items: unknown[]; r
 // - Importera bilder: välj originalmapp, se vad som har ändrats och kör
 //   importen. Allt tungt arbete sker i en Web Worker (src/import/worker.ts).
 // - AI-taggar: ändra taggarna och deras gränser (src/admin/TagEditor.tsx).
-export function AdminView({ bank, onClose }: Props) {
+export function AdminView({ bank, onClose, onSaved }: Props) {
   const [originals, setOriginals] = useState<Originals>({ kind: 'none' })
   const [state, setState] = useState<State>({ kind: 'idle' })
   const [changed, setChanged] = useState(false)
@@ -132,6 +134,8 @@ export function AdminView({ bank, onClose }: Props) {
       } else if (message.type === 'imported') {
         setChanged(true)
         setImports((n) => n + 1)
+        // Bilderna läses om, så att de går att öppna ovanpå Admin.
+        onSaved().catch(() => {})
         setState({ kind: 'done', result: message.result })
       } else setState({ kind: 'idle', error: message.message })
     }
@@ -230,6 +234,7 @@ export function AdminView({ bank, onClose }: Props) {
             bank={bank}
             onSaved={() => {
               setChanged(true)
+              onSaved().catch(() => {})
               // En sökning före sparandet visar gamla AI-taggar. Sök igen.
               setState((current) => (current.kind === 'preview' ? { kind: 'idle' } : current))
             }}

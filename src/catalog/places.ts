@@ -140,6 +140,7 @@ export function placeWithTags(place: Place | null, fromTags: Place[]): Place | n
 }
 
 // Platsens delar från den minsta till den största, t.ex. Stortorget, Gamla Staden, Norr.
+// En park som heter som sitt delområde, t.ex. Pildammsparken, står en gång.
 export function placeParts(place: Place): string[] {
-  return [place.name, place.subdistrict, place.district].filter((part): part is string => !!part)
+  return [...new Set([place.name, place.subdistrict, place.district].filter((part): part is string => !!part))]
 }

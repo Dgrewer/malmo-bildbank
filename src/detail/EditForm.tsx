@@ -14,7 +14,7 @@ interface Props {
   onSave: (user: string, edits: Edit[]) => Promise<void>
   onDone: () => void
   // Öppnar panelen som sätter en tagg på liknande bilder.
-  onSimilar: (tag: string) => void
+  onSimilar?: (tag: string) => void
 }
 
 // Delområdena för platsväljaren, efter stadsområde. Laddas först när någon redigerar.
@@ -234,7 +234,7 @@ export function EditForm({ image, tags, vocabulary, onSave, onDone, onSimilar }:
           disabled={saving}
           onSet={setTag}
         />
-        {shown.added.length > 0 && (
+        {onSimilar && shown.added.length > 0 && (
           <div className="similar-buttons">
             {shown.added.map((tag) => (
               <button key={tag} type="button" className="similar-button" disabled={saving} onClick={() => onSimilar(tag)}>

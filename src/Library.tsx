@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AdminView } from './admin/AdminView.tsx'
+import { OpenImage } from './admin/openImage.ts'
 import { DEFAULT_CONFIG, parseConfig } from './ai/tagConfig.ts'
 import { loadIndex } from './catalog/loadIndex.ts'
 import type { ImageRecord } from './catalog/types.ts'
@@ -66,6 +67,8 @@ export function Library({ root, onChangeFolder }: Props) {
   // Taggen eller platsen som galleriet visar bilder med, eller null för alla bilder.
   const [filter, setFilter] = useState<Filter | null>(null)
   const [admin, setAdmin] = useState(false)
+  // Bilden som är öppen ovanpå Admin, och bilderna man kan bläddra mellan där.
+  const [adminImage, setAdminImage] = useState<{ ids: string[]; position: number } | null>(null)
   // Räknas upp när importen har ändrat indexet, så att katalogen läses om.
   const [version, setVersion] = useState(0)
 
@@ -100,6 +103,7 @@ export function Library({ root, onChangeFolder }: Props) {
     })
     return { images, tags }
   }, [catalog])
+  const byId = useMemo(() => new Map((edited?.images ?? []).map((image) => [image.id, image])), [edited])
   const shown = useMemo(() => {
     if (!edited || !filter) return edited?.images ?? []
     if (filter.kind === 'place') {
@@ -146,13 +150,17 @@ export function Library({ root, onChangeFolder }: Props) {
         </button>
       </header>
       {admin && (
-        <AdminView
-          bank={root}
-          onClose={(changed) => {
-            setAdmin(false)
-            if (changed) setVersion((n) => n + 1)
-          }}
-        />
+        <OpenImage.Provider value={(id, ids) => setAdminImage({ ids, position: ids.indexOf(id) })}>
+          <AdminView
+            bank={root}
+            onSaved={reloadTags}
+            onClose={(changed) => {
+              setAdmin(false)
+              setAdminImage(null)
+              if (changed) setVersion((n) => n + 1)
+            }}
+          />
+        </OpenImage.Provider>
       )}
       {!admin && state.kind === 'loading' && <p className="status">Läser bildbanken…</p>}
       {!admin && state.kind === 'error' && (
@@ -188,6 +196,21 @@ export function Library({ root, onChangeFolder }: Props) {
           onTag={(value) => show({ kind: 'tag', value })}
           onPlace={(value) => show({ kind: 'place', value })}
           onClose={() => setSelected(null)}
+        />
+      )}
+      {admin && catalog && adminImage && byId.get(adminImage.ids[adminImage.position]) && (
+        <DetailView
+          key="admin"
+          image={byId.get(adminImage.ids[adminImage.position])!}
+          tags={edited!.tags.get(adminImage.ids[adminImage.position])!}
+          vocabulary={catalog.vocabulary}
+          onSave={saveEdits}
+          bank={root}
+          position={adminImage.position}
+          count={adminImage.ids.length}
+          previews={catalog.previews}
+          onNavigate={(position) => setAdminImage({ ...adminImage, position })}
+          onClose={() => setAdminImage(null)}
         />
       )}
     </div>

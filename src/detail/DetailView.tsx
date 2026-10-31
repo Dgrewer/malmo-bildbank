@@ -18,25 +18,29 @@ interface Props {
   count: number
   previews: FileSystemDirectoryHandle
   onNavigate: (position: number) => void
-  // Visar alla bilder med taggen i galleriet.
-  onTag: (tag: string) => void
+  // Visar alla bilder med taggen i galleriet. Saknas i Admin, där taggarna bara visas.
+  onTag?: (tag: string) => void
   // Visar alla bilder från stadsområdet eller delområdet i galleriet.
-  onPlace: (place: string) => void
+  onPlace?: (place: string) => void
   vocabulary: Vocabulary
   // Sparar ändringar i användarens egen fil i app-data/edits/.
   onSave: (user: string, edits: Edit[]) => Promise<void>
   // Bildbanken, för panelen som sätter en tagg på liknande bilder.
   bank: FileSystemDirectoryHandle
-  // Anropas när en ny AI-tagg har sparats, så att bilderna läses om.
-  onTagsSaved: () => Promise<void>
+  // Anropas när en ny AI-tagg har sparats, så att bilderna läses om. Saknas i
+  // Admin, där AI-taggarna ändras i fliken AI-taggar.
+  onTagsSaved?: () => Promise<void>
   onClose: () => void
 }
 
-function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => void }) {
+function TagList({ tags, onTag }: { tags: ShownTag[]; onTag?: (tag: string) => void }) {
   return (
     <ul className="tag-list">
       {tags.map(({ tag, ai }) => (
         <li key={tag}>
+          {!onTag ? (
+            <span className={ai ? 'ai' : undefined}>{tag}</span>
+          ) : (
           <button
             type="button"
             className={ai ? 'ai' : undefined}
@@ -45,6 +49,7 @@ function TagList({ tags, onTag }: { tags: ShownTag[]; onTag: (tag: string) => vo
           >
             {tag}
           </button>
+          )}
         </li>
       ))}
     </ul>
@@ -206,7 +211,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
             vocabulary={vocabulary}
             onSave={onSave}
             onDone={() => setEditing(null)}
-            onSimilar={setSimilar}
+            onSimilar={onTagsSaved && setSimilar}
           />
         ) : (
           <dl className="detail-fields">
@@ -248,9 +253,13 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
                 <ul className="tag-list">
                   {placeParts(image.place).map((name) => (
                     <li key={name}>
-                      <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
-                        {name}
-                      </button>
+                      {onPlace ? (
+                        <button type="button" title={`Visa alla bilder från ${name}`} onClick={() => onPlace(name)}>
+                          {name}
+                        </button>
+                      ) : (
+                        <span>{name}</span>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -266,7 +275,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
                 <>
                   <TagList tags={tags} onTag={onTag} />
                   <span className="tags-note">
-                    Klicka på en tagg för att se alla bilder med den.
+                    {onTag && 'Klicka på en tagg för att se alla bilder med den.'}
                     {tags.some((tag) => tag.ai) && ' Streckade taggar har AI:n satt, och de kan vara fel.'}
                   </span>
                 </>
@@ -277,7 +286,7 @@ export function DetailView({ image, tags, position, count, previews, onNavigate,
           </dl>
         )}
       </div>
-      {similar && isEditing && (
+      {similar && isEditing && onTagsSaved && (
         <SimilarPanel bank={bank} image={image} tag={similar} onSaved={onTagsSaved} onClose={() => setSimilar(null)} />
       )}
     </dialog>

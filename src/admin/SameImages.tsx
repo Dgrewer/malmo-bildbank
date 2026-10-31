@@ -5,6 +5,8 @@ import type { ImageRecord } from '../catalog/types.ts'
 import { ensureDirectory, readFile } from '../fs/folder.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 import { quickHash } from '../import/hash.ts'
+import { moveDuplicate } from './moveDuplicate.ts'
+import { useOpenImage } from './openImage.ts'
 
 interface Props {
   bank: FileSystemDirectoryHandle
@@ -58,6 +60,8 @@ async function fileHashes(
 export function SameImages({ bank, originals }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading', done: 0, total: 0 })
   const [round, setRound] = useState(0)
+  // Filer som har flyttats bort, efter sökväg: dit de flyttades, eller felet.
+  const [moves, setMoves] = useState<Map<string, { to: string } | { error: string }>>(new Map())
 
   useEffect(() => {
     let cancelled = false
@@ -99,14 +103,29 @@ export function SameImages({ bank, originals }: Props) {
     )
   }
 
+  async function move(file: FileHash, kept: FileHash) {
+    let result: { to: string } | { error: string }
+    try {
+      if (!originals) throw new Error('Välj mappen som bilderna läses från under Importera bilder.')
+      if ((await originals.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+        throw new Error('Appen fick inte ändra i originalmappen.')
+      }
+      result = { to: await moveDuplicate(bank, originals, file, kept) }
+    } catch (error) {
+      result = { error: error instanceof Error ? error.message : String(error) }
+    }
+    setMoves((all) => new Map(all).set(file.path, result))
+  }
+
   return (
     <section className="same-images">
       <p className="tag-explain">
         Filerna i varje grupp har exakt samma innehåll men olika namn och finns som olika bilder i bildbanken. Vanliga
         kopior importeras redan bara en gång, och resten visas under Importera bilder, Sök efter ändringar. Här syns de
         som importen inte ser: en RAW-fil eller JPG:en bredvid den som är samma fil som en annan bild. Ingenting flyttas
-        automatiskt. Behåll en fil och ta bort eller flytta de andra i mappen för hand. Taggar och rättigheter hör till
-        id:t, så behåll helst den med lägst id. Bara exakta kopior hittas: en bild som har beskurits, förminskats eller
+        automatiskt. Klicka på en miniatyr för att se bilden. <strong>Flytta bort</strong> flyttar filen till
+        app-data/dubbletter/ och loggar flytten, så att den går att ångra. Taggar och rättigheter hör till id:t, så
+        behåll helst den med lägst id. Bara exakta kopior hittas: en bild som har beskurits, förminskats eller
         redigerats räknas inte.
       </p>
       {state.unread > 0 && (
@@ -120,10 +139,23 @@ export function SameImages({ bank, originals }: Props) {
           ? `${count(state.groups.length)} ${state.groups.length === 1 ? 'grupp' : 'grupper'} med samma bild under olika namn.`
           : 'Inga filer med samma innehåll och olika namn.'}
       </p>
+      {[...moves.values()].some((result) => 'to' in result) && (
+        <p className="note" role="status">
+          Flyttade filer finns kvar i bildbanken tills du kör <strong>Sök efter ändringar</strong> och importerar under
+          Importera bilder.
+        </p>
+      )}
       {state.groups.map((group) => (
         <ul key={group[0].hash} className="same-group">
           {group.map((file) => (
-            <SameFile key={file.path} file={file} image={state.byId.get(file.id)!} thumbs={state.thumbs} />
+            <SameFile
+              key={file.path}
+              file={file}
+              image={state.byId.get(file.id)!}
+              thumbs={state.thumbs}
+              moved={moves.get(file.path)}
+              onMove={() => move(file, group.find((other) => other.id !== file.id)!)}
+            />
           ))}
         </ul>
       ))}
@@ -136,13 +168,29 @@ export function SameImages({ bank, originals }: Props) {
   )
 }
 
-function SameFile({ file, image, thumbs }: { file: FileHash; image: ImageRecord; thumbs: FileSystemDirectoryHandle }) {
+// Ett klick på Flytta bort markerar filen, ett klick till flyttar den.
+function SameFile({
+  file,
+  image,
+  thumbs,
+  moved,
+  onMove,
+}: {
+  file: FileHash
+  image: ImageRecord
+  thumbs: FileSystemDirectoryHandle
+  moved: { to: string } | { error: string } | undefined
+  onMove: () => Promise<void>
+}) {
   const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
+  const opens = useOpenImage(image.id)
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [, , ...rest] = file.path.split('/')
   const photographer = file.path.split('/')[1]
   return (
-    <li data-id={image.id}>
-      <span className="same-thumb">{thumb.status === 'ready' && <img src={thumb.url} alt="" loading="lazy" />}</span>
+    <li data-id={image.id} data-path={file.path}>
+      <span className="same-thumb" {...opens}>{thumb.status === 'ready' && <img src={thumb.url} alt="" loading="lazy" />}</span>
       <span>
         <strong>{image.id}</strong> {rest.join('/')}
         <small>
@@ -150,7 +198,30 @@ function SameFile({ file, image, thumbs }: { file: FileHash; image: ImageRecord;
           {file.path !== image.path && `, JPG till ${image.path.split('/').pop()}`}
           {image.alternates.length > 0 && file.path === image.path && ', RAW-fil'}
         </small>
+        {moved && 'to' in moved && <small className="same-moved">Flyttad till {moved.to}</small>}
+        {moved && 'error' in moved && (
+          <small className="error" role="alert">
+            {moved.error}
+          </small>
+        )}
       </span>
+      {!(moved && 'to' in moved) && (
+        <button
+          type="button"
+          className={armed ? 'same-move armed' : 'same-move'}
+          disabled={busy}
+          onClick={async () => {
+            if (!armed) return setArmed(true)
+            setBusy(true)
+            await onMove()
+            setBusy(false)
+            setArmed(false)
+          }}
+          onBlur={() => !busy && setArmed(false)}
+        >
+          {busy ? 'Flyttar…' : armed ? 'Klicka igen för att flytta' : 'Flytta bort'}
+        </button>
+      )}
     </li>
   )
 }

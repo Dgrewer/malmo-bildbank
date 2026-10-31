@@ -1195,3 +1195,23 @@ button:disabled {
   height: 100%;
   object-fit: cover;
 }
+
+/* Miniatyrer i Admin som öppnar bilden. */
+.tag-thumb[role='button'],
+.same-thumb[role='button'] {
+  cursor: zoom-in;
+}
+
+.same-group li > span:nth-child(2) {
+  flex: 1;
+}
+
+.same-move.armed {
+  background: var(--blocked);
+  border-color: var(--blocked);
+  color: #fff;
+}
+
+.same-moved {
+  color: var(--keep);
+}

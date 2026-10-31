@@ -1448,6 +1448,47 @@ try {
       `Samma bild visar: ${JSON.stringify(shown)}`,
     )
     await elementScreenshot(page, '.same-images > [role="status"]', '4.x-samma-bild')
+
+    // En miniatyr öppnar bilden ovanpå Admin, med Redigera.
+    const rawJpg = '.same-group li[data-path="original/Fotograf C/RAW-par.jpg"]'
+    const pairId = await page.$eval(rawJpg, (item) => item.getAttribute('data-id')!)
+    await page.click(`${rawJpg} .same-thumb`)
+    await step('Bilden ovanpå Admin', page.waitForSelector('dialog.detail[open] .edit-toggle', { timeout: 10_000 }))
+    assert((await page.$eval('dialog.detail[open] h2', (h2) => h2.textContent)) === pairId, 'Fel bild öppnades')
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
+
+    // Flytta bort: två klick, sedan ligger filen i app-data/dubbletter/ och flytten är loggad.
+    const original = `${bank}/Original/Fotograf C/RAW-par.jpg`
+    const moved = `${bank}/app-data/dubbletter/original/Fotograf C/RAW-par.jpg`
+    const bytes = await readOpfsBytes(page, original)
+    try {
+      await page.click(`${rawJpg} .same-move`)
+      await page.click(`${rawJpg} .same-move.armed`)
+      await step('Flyttad', page.waitForSelector(`${rawJpg} .same-moved`, { timeout: 10_000 }))
+      assert(!(await readOpfsBytes(page, original)) && (await readOpfsBytes(page, moved))?.equals(bytes!), 'Filen flyttades inte hel')
+      const log = (await readOpfs(page, `${bank}/app-data/dubbletter/flyttade.jsonl`))!.trim().split('\n').map((line) => JSON.parse(line))
+      const entry = log.at(-1)
+      assert(
+        entry.id === pairId && entry.from === 'original/Fotograf C/RAW-par.jpg' && entry.to === 'app-data/dubbletter/original/Fotograf C/RAW-par.jpg' && entry.keptPath === 'original/Fotograf A/Knutssalen Rådhuset.jpg',
+        `flyttade.jsonl: ${JSON.stringify(entry)}`,
+      )
+    } finally {
+      // Testbanken återställs: filen tillbaka och dubblettmappen bort.
+      await page.evaluate(
+        async (bank, base64) => {
+          const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(bank)
+          const folder = await (await root.getDirectoryHandle('Original')).getDirectoryHandle('Fotograf C')
+          const writable = await (await folder.getFileHandle('RAW-par.jpg', { create: true })).createWritable()
+          await writable.write(Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)))
+          await writable.close()
+          await (await root.getDirectoryHandle('app-data')).removeEntry('dubbletter', { recursive: true }).catch(() => {})
+        },
+        bank,
+        bytes!.toString('base64'),
+      )
+    }
+
     await clickButton(page, 'Importera bilder')
   })
 
@@ -1455,6 +1496,15 @@ try {
     const page = importPage!
     await clickButton(page, 'AI-taggar')
     await waitForText(page, 'Välj en tagg i listan', 60_000)
+    // En miniatyr öppnar bilden ovanpå Admin, med Redigera.
+    await clickButton(page, 'Alla bilder och deras taggar')
+    await page.waitForSelector('.tag-images-view .tag-thumb[role="button"]', { timeout: 60_000 })
+    const firstId = await page.$eval('.tag-images-view li[data-id]', (item) => item.getAttribute('data-id')!)
+    await page.click('.tag-images-view .tag-thumb[role="button"]')
+    await step('Bilden från AI-taggar', page.waitForSelector('dialog.detail[open] .edit-toggle', { timeout: 10_000 }))
+    assert((await page.$eval('dialog.detail[open] h2', (h2) => h2.textContent)) === firstId, 'Fel bild från AI-taggar')
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('dialog.detail'), { timeout: 5_000 })
     const hits = async () => {
       await page.waitForFunction(() => /får taggen\.$/.test(document.querySelector('.tag-hits')?.textContent ?? ''), {
         timeout: 60_000,

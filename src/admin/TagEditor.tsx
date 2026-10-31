@@ -36,6 +36,7 @@ import { loadNamedPlaces, type NamedPlace } from '../places/load.ts'
 import { ensureDirectory, readFile, writeFile } from '../fs/folder.ts'
 import { useObjectUrl } from '../fs/useObjectUrl.ts'
 import { writeIndexFile } from '../import/indexFiles.ts'
+import { useOpenImage } from './openImage.ts'
 
 // Adminvyn AI-taggar: välj en tagg, se bilderna sorterade efter hur väl de
 // stämmer och flytta gränsen. Taggar kan läggas till, ändras och tas bort, och
@@ -1015,11 +1016,12 @@ export function TagThumb({
   onWrong,
 }: ThumbProps & { image: ImageRecord; score: number | null; below?: boolean }) {
   const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
+  const opens = useOpenImage(image.id)
   const example = examples.includes(image.id)
   const mark = score === null ? null : below ? (hasTag(image) ? 'lost' : null) : hasTag(image) ? null : 'new'
   return (
     <li title={score === null ? image.id : `${image.id}, värde ${format(score)}`} data-id={image.id}>
-      <div className="tag-thumb">
+      <div className="tag-thumb" {...opens}>
         {thumb.status === 'ready' ? <img src={thumb.url} alt={image.description || image.id} loading="lazy" /> : <span />}
         {mark === 'new' && <span className="mark-new">ny</span>}
         {mark === 'lost' && <span className="mark-lost">försvinner</span>}
@@ -1068,9 +1070,10 @@ export function WrongThumb({
   onUndo: () => void
 }) {
   const thumb = useObjectUrl(thumbs, `${image.id}.webp`)
+  const opens = useOpenImage(image.id)
   return (
     <li title={image.id} data-id={image.id}>
-      <div className="tag-thumb">
+      <div className="tag-thumb" {...opens}>
         {thumb.status === 'ready' ? <img src={thumb.url} alt={image.description || image.id} loading="lazy" /> : <span />}
         {hasTag && <span className="mark-lost">försvinner</span>}
       </div>
@@ -1306,6 +1309,7 @@ function ImageTagsThumb({
   onChoose: (tag: string, choice: Choice | null) => void
 }) {
   const thumb = useObjectUrl(thumbs, `${item.image.id}.webp`)
+  const opens = useOpenImage(item.image.id)
   // Taggen som är markerad för borttagning. Nästa klick tar bort den.
   const [armed, setArmed] = useState<string | null>(null)
   const [text, setText] = useState('')
@@ -1331,7 +1335,7 @@ function ImageTagsThumb({
 
   return (
     <li title={item.image.id} data-id={item.image.id}>
-      <div className="tag-thumb">
+      <div className="tag-thumb" {...opens}>
         {thumb.status === 'ready' ? (
           <img src={thumb.url} alt={item.image.description || item.image.id} loading="lazy" />
         ) : (

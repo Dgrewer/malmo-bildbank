@@ -27,9 +27,11 @@ Stegen nedan följer den, plus det som har lagts till under bygget.
 
 ## Steg 6 – Publicera på GitHub Pages
 
-- [ ] GitHub Actions bygger appen och publicerar den på Pages vid varje push till main.
-- [ ] Versionsnumret i appens sidfot.
-- [ ] Kontrollera att den publicerade appen inte gör några anrop till andra adresser än GitHub Pages.
+- [ ] 6.1 GitHub Actions bygger appen och publicerar den på Pages vid varje push till main.
+- [ ] 6.2 Settings → Pages i repot, med GitHub Actions som källa (görs av användaren).
+- [ ] 6.3 Versionsnumret i appens sidfot.
+- [ ] 6.4 Kontrollera i nätverksfliken att den publicerade appen inte gör några anrop till andra adresser än GitHub Pages.
+- [ ] 6.5 Arbeta i en egen gren och slå ihop med main först när ändringen är testad. Main är alltid det kollegorna använder.
 
 ## Steg 7 – Testa slutprodukten
 
